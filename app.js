@@ -668,6 +668,7 @@
 
   async function savePerson(event) {
     event.preventDefault();
+    const form = event.currentTarget;
     const submit = event.submitter;
     setBusy(submit, true, "Guardando…");
     try {
@@ -678,7 +679,7 @@
         area: $("person-area").value,
         active: $("person-active").checked
       });
-      event.currentTarget.reset();
+      form.reset();
       $("person-id").value = "";
       $("person-active").checked = true;
       await loadAdminData();
@@ -689,6 +690,7 @@
 
   async function saveRule(event) {
     event.preventDefault();
+    const form = event.currentTarget;
     const submit = event.submitter;
     setBusy(submit, true, "Guardando…");
     try {
@@ -702,7 +704,7 @@
         active: $("rule-active").checked,
         sortOrder: 100
       });
-      event.currentTarget.reset();
+      form.reset();
       $("rule-id").value = "";
       await loadAdminData();
       renderRuleFilters();
