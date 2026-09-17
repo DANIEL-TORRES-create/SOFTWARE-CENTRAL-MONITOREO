@@ -9,14 +9,15 @@
 </head>
 <body>
   <div id="app" class="app-shell">
+    <div class="sticky-zone">
     <header class="topbar">
       <div class="brand">
         <div class="logo-fallback" id="logo-fallback">A</div>
         <img id="company-logo" class="company-logo" src="assets/logo.png" alt="Logo de la empresa">
-        <div>
-          <h1>Central Integral de Monitoreo</h1>
-          <p>ARDEPE · Seguridad vial</p>
-        </div>
+      </div>
+      <div class="brand-title">
+        <h1>Central Integral de Monitoreo</h1>
+        <p>ARDEPE · Seguridad vial</p>
       </div>
       <div class="session-controls">
         <span id="connection-status" class="connection-status connecting">Conectando…</span>
@@ -29,7 +30,7 @@
       </div>
     </header>
 
-    <main class="main-content">
+    <div class="sticky-content">
       <section class="metrics" aria-label="Resumen">
         <article class="metric"><span>Pendientes</span><strong id="metric-pending">0</strong><small>Sin gestionar</small></article>
         <article class="metric"><span>En gestión</span><strong id="metric-progress">0</strong><small>Tomadas por un operador</small></article>
@@ -49,13 +50,16 @@
           </select>
           <select id="priority-filter" aria-label="Prioridad"><option value="ALL">Todas las prioridades</option><option value="CRITICA">Crítica</option><option value="ALTA">Alta</option><option value="MEDIA">Media</option><option value="BAJA">Baja</option></select>
           <input id="search-filter" type="search" placeholder="Buscar placa, conductor o zona" aria-label="Buscar">
-          <label class="date-field"><span>Desde</span><input id="date-from" type="datetime-local"></label>
-          <label class="date-field"><span>Hasta</span><input id="date-to" type="datetime-local"></label>
-          <button id="apply-history" class="button secondary" type="button">Consultar</button>
-          <button id="live-button" class="button primary" type="button">Volver a vivo</button>
         </div>
       </section>
+      <section id="history-banner" class="history-banner" hidden>
+        <div><strong>Modo histórico</strong><span id="history-range-label"></span></div>
+        <button id="live-button" class="button primary" type="button">Volver a monitoreo en vivo</button>
+      </section>
+    </div>
+    </div>
 
+    <main class="main-content">
       <section class="workspace">
         <aside class="panel event-panel">
           <header class="panel-header"><h2>Cola de eventos</h2><span id="visible-count">0 eventos</span></header>
@@ -63,44 +67,88 @@
         </aside>
 
         <section class="panel context-panel">
-          <header class="panel-header"><h2 id="detail-rule">Seleccione un evento</h2><span id="detail-id">—</span></header>
+          <header class="panel-header context-header"><div><h2 id="detail-rule">Seleccione un evento</h2><span id="detail-reference">Seleccione una tarjeta de la cola</span></div><span id="detail-priority" class="priority-label">—</span></header>
           <div class="context-body">
-            <div class="detail-status-row"><span id="detail-status" class="status pending">PENDIENTE</span><strong id="detail-elapsed">00:00:00</strong></div>
-            <div id="map" aria-label="Mapa del evento"></div>
+            <div class="detail-status-row"><span id="detail-status" class="status pending">PENDIENTE</span><div class="elapsed-block"><small>Tiempo sin resolver</small><strong id="detail-elapsed">00:00:00</strong></div></div>
+            <div class="map-wrap">
+              <div id="map" aria-label="Mapa del evento"></div>
+              <div id="map-loading" class="map-loading" hidden><span class="spinner"></span><span>Obteniendo ubicación…</span></div>
+              <button id="expand-map" class="map-expand" type="button">Ampliar mapa</button>
+            </div>
             <dl class="facts">
               <div><dt>Placa</dt><dd id="detail-plate">—</dd></div>
               <div><dt>Conductor</dt><dd id="detail-driver">—</dd></div>
               <div><dt>Fecha del evento</dt><dd id="detail-date">—</dd></div>
-              <div><dt>Valor detectado</dt><dd id="detail-value">—</dd></div>
+              <div><dt>Duración o valor detectado</dt><dd id="detail-value">—</dd></div>
+              <div><dt>Personal asignado</dt><dd id="detail-operator">—</dd></div>
+              <div><dt>Inicio de gestión</dt><dd id="detail-started">—</dd></div>
+              <div><dt>Eventos similares hoy</dt><dd id="detail-similar">—</dd></div>
               <div class="wide"><dt>Ubicación</dt><dd id="detail-zone">—</dd></div>
             </dl>
           </div>
         </section>
 
         <section class="panel management-panel">
-          <header class="panel-header"><h2>Gestión del evento</h2><span id="management-mode">Sin iniciar</span></header>
+          <header class="panel-header management-header"><h2>Gestión del evento</h2><button id="guide-button" class="guide-button" type="button">? Guía de gestión</button><span id="management-mode">Sin iniciar</span></header>
           <form id="management-form" class="management-form">
-            <button id="start-management" class="button primary full" type="button">Iniciar gestión</button>
+            <button id="start-management" class="button primary full" type="button" disabled>Iniciar gestión</button>
             <fieldset id="management-fields" disabled>
-              <label>Resultado<select id="result" required><option value="">Seleccionar</option><option>Evento confirmado</option><option>Justificado</option><option>Falsa alerta</option><option>Escalado</option></select></label>
-              <label>Contacto<select id="contact"><option>Conductor contactado</option><option>Supervisor contactado</option><option>Sin respuesta</option><option>No aplica</option></select></label>
-              <label>Descargo o explicación<textarea id="driver-statement" placeholder="Respuesta del conductor o responsable"></textarea></label>
-              <label>Causa identificada<select id="cause" required><option value="">Seleccionar</option><option>Conducta insegura</option><option>Condición de la vía</option><option>Emergencia operativa</option><option>Falla del vehículo</option><option>Error de configuración</option><option>Por confirmar</option></select></label>
-              <label>Acción inmediata<textarea id="immediate-action" required placeholder="Medida realizada por monitoreo"></textarea></label>
-              <label>Acción correctiva o preventiva<textarea id="corrective-action" placeholder="Acción posterior recomendada"></textarea></label>
+              <label>Resultado<span class="field-help">Conclusión operativa de la revisión.</span><select id="result" required><option value="">Seleccionar</option><option>Evento confirmado</option><option>Justificado</option><option>Falsa alerta</option><option>Escalado</option></select></label>
+              <label>Contacto<span class="field-help">Persona con la que se logró comunicación.</span><select id="contact"><option>Conductor contactado</option><option>Supervisor contactado</option><option>Sin respuesta</option><option>No aplica</option></select></label>
+              <label>Descargo o explicación<span class="field-help">Versión comunicada por el conductor o responsable.</span><textarea id="driver-statement" placeholder="Respuesta del conductor o responsable"></textarea></label>
+              <label>Causa identificada<span class="field-help">Origen más probable del evento.</span><select id="cause" required><option value="">Seleccionar</option><option>Conducta insegura</option><option>Condición de la vía</option><option>Emergencia operativa</option><option>Falla del vehículo</option><option>Error de configuración</option><option>Por confirmar</option></select></label>
+              <label>Acción inmediata<span class="field-help">Medida aplicada durante la atención actual.</span><textarea id="immediate-action" required placeholder="Medida realizada por monitoreo"></textarea></label>
+              <label>Acción correctiva o preventiva<span class="field-help">Medida posterior para evitar que el evento se repita.</span><textarea id="corrective-action" placeholder="Acción posterior recomendada"></textarea></label>
               <div class="two-columns">
-                <label>Seguimiento<select id="follow-up"><option>No requiere</option><option>Capacitación</option><option>Revisión técnica</option><option>Escalar a jefatura</option></select></label>
-                <label>Fecha compromiso<input id="commitment-date" type="date"></label>
+                <label>Seguimiento<span class="field-help">Tratamiento posterior requerido.</span><select id="follow-up"><option>No requiere</option><option>Capacitación</option><option>Revisión técnica</option><option>Escalar a jefatura</option></select></label>
+                <label>Fecha compromiso<span class="field-help">Fecha acordada para completar el seguimiento.</span><input id="commitment-date" type="date"></label>
               </div>
-              <label>Responsable del seguimiento<input id="follow-up-owner" type="text"></label>
-              <label>Evidencia o enlace<input id="evidence" type="url" placeholder="https://…"></label>
-              <label>Observación complementaria<textarea id="notes"></textarea></label>
+              <label>Responsable del seguimiento<span class="field-help">Persona o área encargada de la acción pendiente.</span><input id="follow-up-owner" type="text"></label>
+              <label>Evidencia o enlace<span class="field-help">URL de foto, video, ticket o documento relacionado.</span><input id="evidence" type="url" placeholder="https://…"></label>
+              <label>Observación complementaria<span class="field-help">Información útil que no corresponde a los campos anteriores.</span><textarea id="notes"></textarea></label>
               <button class="button success full" type="submit">Registrar gestión</button>
             </fieldset>
           </form>
         </section>
       </section>
     </main>
+  </div>
+
+  <div id="history-modal" class="modal-backdrop" hidden>
+    <section class="modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
+      <header class="modal-header"><h2 id="history-title">Consultar histórico</h2><button id="close-history" class="icon-button" type="button" aria-label="Cerrar">×</button></header>
+      <form id="history-form" class="history-form">
+        <p class="modal-note">Consulta hasta siete días por vez. El monitoreo en vivo se pausará mientras revisas los resultados.</p>
+        <div class="quick-ranges"><button type="button" data-history-range="today">Hoy</button><button type="button" data-history-range="yesterday">Ayer</button><button type="button" data-history-range="7days">Últimos 7 días</button></div>
+        <label>Desde<input id="date-from" type="datetime-local" required></label>
+        <label>Hasta<input id="date-to" type="datetime-local" required></label>
+        <label>Estado inicial<select id="history-status-filter"><option value="ALL">Todos los estados</option><option value="OPEN">No gestionadas</option><option value="CLOSED">Gestionadas</option></select></label>
+        <div id="history-progress" class="operation-progress" hidden><span class="spinner"></span><span>Consultando eventos y gestiones…</span></div>
+        <div class="modal-actions"><button id="cancel-history" class="button secondary" type="button">Cancelar</button><button id="apply-history" class="button primary" type="submit">Consultar</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div id="guide-modal" class="modal-backdrop" hidden>
+    <section class="modal guide-modal" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+      <header class="modal-header"><h2 id="guide-title">Guía rápida de gestión</h2><button id="close-guide" class="icon-button" type="button" aria-label="Cerrar">×</button></header>
+      <div class="guide-content">
+        <ol>
+          <li>Selecciona al personal activo que realizará la atención.</li>
+          <li>Elige un evento y revisa placa, tiempo, ubicación y conductor.</li>
+          <li>Presiona <strong>Iniciar gestión</strong> para reservar el evento.</li>
+          <li>Contacta al conductor o supervisor y registra únicamente información confirmada.</li>
+          <li>Define resultado, causa y acción inmediata.</li>
+          <li>Si queda una acción pendiente, registra seguimiento, responsable y fecha compromiso.</li>
+          <li>Presiona <strong>Registrar gestión</strong> y espera la confirmación.</li>
+        </ol>
+        <div class="guide-tip"><strong>Evento confirmado:</strong> ocurrió y corresponde gestionarlo.</div>
+        <div class="guide-tip"><strong>Justificado:</strong> ocurrió, pero existía un motivo operativo válido.</div>
+        <div class="guide-tip"><strong>Falsa alerta:</strong> lectura incorrecta, duplicidad o problema de configuración.</div>
+        <div class="guide-tip"><strong>Escalado:</strong> necesita intervención de jefatura u otra área.</div>
+        <p class="guide-warning">No cierres un evento crítico mientras exista una acción inmediata pendiente.</p>
+      </div>
+    </section>
   </div>
 
   <div id="admin-modal" class="modal-backdrop" hidden>
@@ -127,9 +175,9 @@
           <div id="rules-list" class="admin-list"></div>
           <form id="rule-form" class="admin-form">
             <input id="rule-id" type="hidden">
-            <label>ID de regla en Geotab<input id="rule-geotab-id"></label>
-            <label>Nombre visible<input id="rule-name" required></label>
-            <div class="two-columns"><label>Categoría<input id="rule-category"></label><label>Prioridad<select id="rule-priority"><option>CRITICA</option><option>ALTA</option><option>MEDIA</option><option>BAJA</option></select></label></div>
+            <label>ID de regla en Geotab<span class="field-help">ID exacto de la regla que genera ExceptionEvent.</span><input id="rule-geotab-id"></label>
+            <label>Nombre visible<span class="field-help">Nombre que verá el operador en filtros y eventos.</span><input id="rule-name" required></label>
+            <div class="two-columns"><label>Categoría<span class="field-help">Agrupación funcional de la regla.</span><input id="rule-category" placeholder="PARADAS, VELOCIDAD o CONDUCCIÓN"></label><label>Prioridad<span class="field-help">Nivel operativo predeterminado.</span><select id="rule-priority"><option>CRITICA</option><option>ALTA</option><option>MEDIA</option><option>BAJA</option></select></label></div>
             <label class="check-label"><input id="rule-active" type="checkbox"> Regla activa</label>
             <button class="button primary" type="submit">Guardar regla</button>
           </form>
