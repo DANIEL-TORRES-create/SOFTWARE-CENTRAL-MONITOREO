@@ -1,0 +1,814 @@
+(() => {
+  "use strict";
+
+  const CONFIG = Object.freeze({
+    googleWebAppUrl: "https://script.google.com/macros/s/AKfycbxH8xtH10bpeLT_vNY5NELldhVTRy2tZfLC8kaD9h_ePrvmhOl6Mz1eNQaqehGCwa_m/exec",
+    databaseKey: "ARDEPE",
+    allowedGroupIds: ["b2798", "b279A"],
+    zoneTypeId: "bFC",
+    liveIntervalMs: 15000,
+    defaultCenter: [-12.046374, -77.042793]
+  });
+
+  const app = {
+    api: null,
+    map: null,
+    marker: null,
+    devices: new Map(),
+    zones: [],
+    rules: [],
+    personnel: [],
+    eventStates: new Map(),
+    events: [],
+    selectedEvent: null,
+    currentRule: "ALL",
+    liveMode: true,
+    timer: null,
+    adminToken: "",
+    adminRules: []
+  };
+
+  const $ = id => document.getElementById(id);
+
+  function installLogoFallback() {
+    const logo = $("company-logo");
+    const fallback = $("logo-fallback");
+    logo.addEventListener("load", () => { logo.hidden = false; fallback.hidden = true; });
+    logo.addEventListener("error", () => { logo.hidden = true; fallback.hidden = false; });
+    if (logo.complete) {
+      logo.hidden = !logo.naturalWidth;
+      fallback.hidden = Boolean(logo.naturalWidth);
+    }
+  }
+
+  function initializeMap() {
+    if (!window.L || app.map) return;
+    app.map = L.map("map", { center: CONFIG.defaultCenter, zoom: 11, minZoom: 3 });
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap",
+      maxZoom: 19
+    }).addTo(app.map);
+  }
+
+  async function initializeApp(api, callback) {
+    app.api = api;
+    try {
+      await loadFleet();
+      await refreshCycle();
+      startLiveLoop();
+      setConnection("online", "En vivo");
+    } catch (error) {
+      console.error(error);
+      setConnection("error", "Error de conexión");
+      showToast(error.message || "No se pudo iniciar la central", true);
+    } finally {
+      if (typeof callback === "function") callback();
+    }
+  }
+
+  async function loadFleet() {
+    const devices = await app.api.call("Get", { typeName: "Device", search: { activeState: "Active" } });
+    app.devices.clear();
+    (devices || []).forEach(device => {
+      const groups = Array.isArray(device.groups) ? device.groups : [];
+      const allowed = !CONFIG.allowedGroupIds.length || groups.some(group => CONFIG.allowedGroupIds.includes(group.id));
+      if (allowed && device.serialNumber !== "000-000-0000") {
+        app.devices.set(device.id, { id: device.id, name: String(device.name || device.id).toUpperCase() });
+      }
+    });
+    const zones = await app.api.call("Get", { typeName: "Zone" });
+    app.zones = (zones || []).filter(zone => Array.isArray(zone.zoneTypes) && zone.zoneTypes.some(type => type.id === CONFIG.zoneTypeId));
+  }
+
+  async function refreshCycle() {
+    if (!app.api) return;
+    setConnection("connecting", "Sincronizando…");
+    const range = getQueryRange();
+    await loadBootstrap(range.fromDate);
+    const events = await queryGeotabEvents(range.fromDate, range.toDate);
+    app.events = events.sort((a, b) => new Date(b.activeFrom) - new Date(a.activeFrom));
+    await syncUnknownEvents(app.events);
+    mergeStates();
+    renderAll();
+    setConnection("online", app.liveMode ? "En vivo" : "Consulta histórica");
+  }
+
+  async function loadBootstrap(fromDate) {
+    validateBackendUrl();
+    const result = await getJson({ action: "bootstrap", fromDate });
+    if (!result.success) throw new Error(result.message || "No se pudo leer el backend");
+    app.personnel = result.personnel || [];
+    app.rules = result.rules || [];
+    app.eventStates = new Map((result.eventStates || []).map(state => [state.eventKey, state]));
+    renderPersonnel();
+    renderRuleFilters();
+  }
+
+  async function queryGeotabEvents(fromDate, toDate) {
+    const queries = app.rules.map(async rule => {
+      const search = { ruleSearch: { id: rule.geotabRuleId }, fromDate };
+      if (toDate) search.toDate = toDate;
+      const result = await app.api.call("Get", { typeName: "ExceptionEvent", search });
+      return (result || []).map(event => normalizeEvent(event, rule));
+    });
+    const groups = await Promise.all(queries);
+    const unique = new Map();
+    groups.flat().forEach(event => {
+      if (app.devices.has(event.deviceId)) unique.set(event.eventKey, event);
+    });
+    return [...unique.values()];
+  }
+
+  function normalizeEvent(event, rule) {
+    const geotabEventId = cleanId(event.id);
+    const device = app.devices.get(event.device && event.device.id);
+    return {
+      eventKey: `${CONFIG.databaseKey}:${geotabEventId}`,
+      geotabEventId,
+      ruleId: rule.id,
+      ruleName: rule.name,
+      priority: String(rule.priority || "MEDIA").toUpperCase(),
+      deviceId: event.device ? event.device.id : "",
+      plate: device ? device.name : "SIN IDENTIFICAR",
+      activeFrom: event.activeFrom,
+      activeTo: event.activeTo || "",
+      latitude: numberOrNull(event.latitude),
+      longitude: numberOrNull(event.longitude),
+      detectedValue: buildDetectedValue(event, rule),
+      driver: "POR CONSULTAR",
+      zone: "POR CONSULTAR",
+      status: "PENDIENTE",
+      startedAt: "",
+      closedAt: "",
+      elapsedSeconds: 0,
+      operatorId: ""
+    };
+  }
+
+  function buildDetectedValue(event, rule) {
+    if (rule.id === "PARADA_NO_AUTORIZADA") return formatElapsed(secondsBetween(event.activeFrom, event.activeTo || new Date().toISOString()));
+    if (event.duration != null && Number(event.duration) > 0) return `${Math.round(Number(event.duration))} s`;
+    return "Detectado por regla Geotab";
+  }
+
+  async function syncUnknownEvents(events) {
+    const unknown = events.filter(event => !app.eventStates.has(event.eventKey));
+    for (let index = 0; index < unknown.length; index += 80) {
+      const batch = unknown.slice(index, index + 80).map(event => ({
+        eventKey: event.eventKey,
+        geotabEventId: event.geotabEventId,
+        ruleId: event.ruleId,
+        ruleName: event.ruleName,
+        deviceId: event.deviceId,
+        plate: event.plate,
+        activeFrom: event.activeFrom,
+        activeTo: event.activeTo,
+        latitude: event.latitude,
+        longitude: event.longitude,
+        detectedValue: event.detectedValue,
+        priority: event.priority
+      }));
+      await postOperation("syncEvents", { eventsJson: JSON.stringify(batch) });
+      batch.forEach(item => app.eventStates.set(item.eventKey, { eventKey: item.eventKey, status: "PENDIENTE", startedAt: "", closedAt: "", elapsedSeconds: 0, operatorId: "" }));
+    }
+  }
+
+  function mergeStates() {
+    app.events.forEach(event => {
+      const state = app.eventStates.get(event.eventKey);
+      if (!state) return;
+      Object.assign(event, state);
+      if (!event.driver) event.driver = "POR CONSULTAR";
+      if (!event.zone) event.zone = "POR CONSULTAR";
+    });
+  }
+
+  function renderAll() {
+    renderEvents();
+    renderMetrics();
+    if (app.selectedEvent) {
+      const fresh = app.events.find(event => event.eventKey === app.selectedEvent.eventKey);
+      if (fresh) selectEvent(fresh, false);
+      else clearDetail();
+    }
+  }
+
+  function renderPersonnel() {
+    const select = $("session-person");
+    const previous = select.value || sessionStorage.getItem("centralPersonId") || "";
+    select.replaceChildren(new Option("Seleccione personal", ""));
+    app.personnel.filter(person => person.active).forEach(person => select.add(new Option(`${person.name} · ${person.area}`, person.id)));
+    if (app.personnel.some(person => person.id === previous && person.active)) select.value = previous;
+  }
+
+  function renderRuleFilters() {
+    const container = $("rule-filters");
+    container.replaceChildren();
+    [{ id: "ALL", name: "Todas" }, ...app.rules].forEach(rule => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `rule-filter${app.currentRule === rule.id ? " active" : ""}`;
+      button.textContent = rule.name;
+      button.addEventListener("click", () => {
+        app.currentRule = rule.id;
+        renderRuleFilters();
+        renderEvents();
+        renderMetrics();
+      });
+      container.appendChild(button);
+    });
+  }
+
+  function filteredEvents() {
+    const status = $("status-filter").value;
+    const priority = $("priority-filter").value;
+    const search = $("search-filter").value.trim().toLowerCase();
+    return app.events.filter(event => {
+      const matchesRule = app.currentRule === "ALL" || event.ruleId === app.currentRule;
+      const matchesPriority = priority === "ALL" || event.priority === priority;
+      const open = event.status === "PENDIENTE" || event.status === "EN_GESTION" || event.status === "ESCALADO";
+      const closed = event.status === "GESTIONADO" || event.status === "DESCARTADO";
+      const matchesStatus = status === "ALL" || (status === "OPEN" && open) || (status === "CLOSED" && closed) || event.status === status;
+      const haystack = `${event.plate} ${event.driver} ${event.zone} ${event.ruleName}`.toLowerCase();
+      return matchesRule && matchesPriority && matchesStatus && (!search || haystack.includes(search));
+    });
+  }
+
+  function renderEvents() {
+    const container = $("event-list");
+    const events = filteredEvents();
+    container.replaceChildren();
+    $("visible-count").textContent = `${events.length} ${events.length === 1 ? "evento" : "eventos"}`;
+    if (!events.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.textContent = "No hay eventos que coincidan con los filtros.";
+      container.appendChild(empty);
+      return;
+    }
+    events.forEach(event => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `event-card${app.selectedEvent && app.selectedEvent.eventKey === event.eventKey ? " selected" : ""}`;
+      const head = document.createElement("div");
+      head.className = "event-card-head";
+      const plate = document.createElement("strong");
+      plate.textContent = event.plate;
+      const badge = document.createElement("span");
+      badge.className = `status ${statusClass(event.status)}`;
+      badge.textContent = statusLabel(event.status);
+      head.append(plate, badge);
+      const type = document.createElement("div");
+      type.className = "event-card-type";
+      type.textContent = event.ruleName;
+      const meta = document.createElement("div");
+      meta.className = "event-card-meta";
+      const priority = document.createElement("span");
+      priority.textContent = event.priority;
+      const elapsed = document.createElement("span");
+      elapsed.dataset.elapsedFor = event.eventKey;
+      elapsed.textContent = displayEventElapsed(event);
+      meta.append(priority, elapsed);
+      button.append(head, type, meta);
+      button.addEventListener("click", () => selectEvent(event, true));
+      container.appendChild(button);
+    });
+  }
+
+  function renderMetrics() {
+    const scoped = app.events.filter(event => app.currentRule === "ALL" || event.ruleId === app.currentRule);
+    const pending = scoped.filter(event => event.status === "PENDIENTE").length;
+    const progress = scoped.filter(event => event.status === "EN_GESTION" || event.status === "ESCALADO").length;
+    const today = localDateKey(new Date());
+    const managed = scoped.filter(event => ["GESTIONADO", "DESCARTADO"].includes(event.status) && event.closedAt && localDateKey(new Date(event.closedAt)) === today).length;
+    const open = scoped.filter(event => !["GESTIONADO", "DESCARTADO"].includes(event.status));
+    const oldest = open.reduce((max, event) => Math.max(max, secondsBetween(event.activeFrom, new Date().toISOString())), 0);
+    $("metric-pending").textContent = pending;
+    $("metric-progress").textContent = progress;
+    $("metric-managed").textContent = managed;
+    $("metric-oldest").textContent = formatElapsed(oldest);
+  }
+
+  async function selectEvent(event, resolveRemote) {
+    const changed = !app.selectedEvent || app.selectedEvent.eventKey !== event.eventKey;
+    app.selectedEvent = event;
+    if (changed) $("management-form").reset();
+    $("detail-rule").textContent = event.ruleName;
+    $("detail-id").textContent = event.geotabEventId;
+    $("detail-plate").textContent = event.plate;
+    $("detail-date").textContent = formatDate(event.activeFrom);
+    $("detail-value").textContent = event.detectedValue;
+    $("detail-driver").textContent = event.driver;
+    $("detail-zone").textContent = event.zone;
+    updateDetailStatus();
+    updateManagementAccess();
+    renderEvents();
+    if (resolveRemote) await resolveEventContext(event);
+    if (["GESTIONADO", "DESCARTADO"].includes(event.status)) await loadEventManagement(event);
+  }
+
+  async function loadEventManagement(event) {
+    try {
+      const result = await getJson({ action: "eventManagement", eventKey: event.eventKey });
+      if (!result.success || !result.management || !app.selectedEvent || app.selectedEvent.eventKey !== event.eventKey) return;
+      const management = result.management;
+      $("result").value = management.result;
+      $("contact").value = management.contact;
+      $("driver-statement").value = management.driverStatement;
+      $("cause").value = management.cause;
+      $("immediate-action").value = management.immediateAction;
+      $("corrective-action").value = management.correctiveAction;
+      $("follow-up").value = management.followUp;
+      $("follow-up-owner").value = management.followUpOwner;
+      $("commitment-date").value = management.commitmentDate;
+      $("evidence").value = management.evidence;
+      $("notes").value = management.notes;
+      $("management-mode").textContent = `Gestionada por ${management.personName} · ${management.personArea}`;
+    } catch (error) {
+      console.error("No se pudo leer la gestión", error);
+    }
+  }
+
+  async function resolveEventContext(event) {
+    try {
+      let lat = event.latitude;
+      let lng = event.longitude;
+      if (!validCoordinate(lat, lng)) {
+        const logs = await app.api.call("Get", { typeName: "LogRecord", search: { deviceSearch: { id: event.deviceId }, fromDate: event.activeFrom, maxResults: 1 } });
+        if (logs && logs[0]) { lat = numberOrNull(logs[0].latitude); lng = numberOrNull(logs[0].longitude); }
+      }
+      event.latitude = lat;
+      event.longitude = lng;
+      if (validCoordinate(lat, lng)) {
+        showOnMap(lat, lng);
+        event.zone = findZoneName(lat, lng) || await reverseGeocode(lat, lng);
+      } else event.zone = "UBICACIÓN NO DISPONIBLE";
+      event.driver = await getCurrentDriver(event.deviceId);
+      if (app.selectedEvent && app.selectedEvent.eventKey === event.eventKey) {
+        $("detail-driver").textContent = event.driver;
+        $("detail-zone").textContent = event.zone;
+      }
+    } catch (error) {
+      console.error("No se pudo completar el contexto", error);
+    }
+  }
+
+  async function getCurrentDriver(deviceId) {
+    try {
+      const statuses = await app.api.call("Get", { typeName: "DeviceStatusInfo", search: { deviceSearch: { id: deviceId } } });
+      const driver = statuses && statuses[0] && statuses[0].driver;
+      if (!driver || driver.id === "NoDriverId") return "SIN CONDUCTOR ASIGNADO";
+      const users = await app.api.call("Get", { typeName: "User", search: { id: driver.id } });
+      if (!users || !users[0]) return "DESCONOCIDO";
+      return `${users[0].firstName || ""} ${users[0].lastName || ""}`.trim().toUpperCase();
+    } catch (_) {
+      return "NO DISPONIBLE";
+    }
+  }
+
+  function findZoneName(lat, lng) {
+    for (const zone of app.zones) {
+      if (!Array.isArray(zone.points) || !zone.points.length) continue;
+      const inside = pointInPolygon(lng, lat, zone.points.map(point => [Number(point.x), Number(point.y)]));
+      if (inside) return String(zone.name || "ZONA").toUpperCase();
+    }
+    return "";
+  }
+
+  function pointInPolygon(x, y, polygon) {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i][0], yi = polygon[i][1], xj = polygon[j][0], yj = polygon[j][1];
+      const intersects = ((yi > y) !== (yj > y)) && x < ((xj - xi) * (y - yi)) / ((yj - yi) || Number.EPSILON) + xi;
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  }
+
+  async function reverseGeocode(lat, lng) {
+    try {
+      const addresses = await app.api.call("GetAddresses", { coordinates: [{ x: lng, y: lat }] });
+      return addresses && addresses[0] ? String(addresses[0].formattedAddress).toUpperCase() : `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    } catch (_) {
+      return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    }
+  }
+
+  function showOnMap(lat, lng) {
+    if (!app.map) return;
+    app.map.invalidateSize();
+    app.map.setView([lat, lng], 16);
+    if (app.marker) app.map.removeLayer(app.marker);
+    app.marker = L.marker([lat, lng]).addTo(app.map);
+  }
+
+  function updateDetailStatus() {
+    if (!app.selectedEvent) return;
+    const status = $("detail-status");
+    status.textContent = statusLabel(app.selectedEvent.status);
+    status.className = `status ${statusClass(app.selectedEvent.status)}`;
+    $("detail-elapsed").textContent = displayEventElapsed(app.selectedEvent);
+  }
+
+  function updateManagementAccess() {
+    const event = app.selectedEvent;
+    const personId = $("session-person").value;
+    const start = $("start-management");
+    const fields = $("management-fields");
+    if (!event) { start.disabled = true; fields.disabled = true; return; }
+    const closed = ["GESTIONADO", "DESCARTADO"].includes(event.status);
+    const mine = event.status === "EN_GESTION" && event.operatorId === personId;
+    const canStart = event.status === "PENDIENTE" || event.status === "ESCALADO";
+    start.hidden = !canStart;
+    start.textContent = event.status === "ESCALADO" ? "Continuar gestión" : "Iniciar gestión";
+    start.disabled = !personId || !canStart;
+    fields.disabled = closed || !mine;
+    $("management-mode").textContent = closed ? "Finalizada" : mine ? "En gestión" : event.status === "EN_GESTION" ? "Asignada a otro operador" : "Sin iniciar";
+  }
+
+  async function startSelectedManagement() {
+    const event = requireSelectedEvent();
+    const personId = requireActiveSelection();
+    setBusy($("start-management"), true, "Iniciando…");
+    try {
+      await postOperation("startManagement", { eventKey: event.eventKey, personId });
+      Object.assign(event, { status: "EN_GESTION", operatorId: personId, startedAt: new Date().toISOString() });
+      app.eventStates.set(event.eventKey, { ...event });
+      updateDetailStatus();
+      updateManagementAccess();
+      renderEvents();
+      renderMetrics();
+      showToast("Gestión iniciada");
+    } finally {
+      setBusy($("start-management"), false, "Iniciar gestión");
+    }
+  }
+
+  async function completeSelectedManagement(eventObject) {
+    eventObject.preventDefault();
+    const event = requireSelectedEvent();
+    const personId = requireActiveSelection();
+    const submit = eventObject.submitter;
+    setBusy(submit, true, "Registrando…");
+    try {
+      const result = await postOperation("completeManagement", {
+        eventKey: event.eventKey,
+        personId,
+        result: $("result").value,
+        contact: $("contact").value,
+        driverStatement: $("driver-statement").value,
+        cause: $("cause").value,
+        immediateAction: $("immediate-action").value,
+        correctiveAction: $("corrective-action").value,
+        followUp: $("follow-up").value,
+        followUpOwner: $("follow-up-owner").value,
+        commitmentDate: $("commitment-date").value,
+        evidence: $("evidence").value,
+        notes: $("notes").value,
+        driver: event.driver,
+        zone: event.zone
+      });
+      Object.assign(event, { status: result.status, closedAt: new Date().toISOString(), elapsedSeconds: result.elapsedSeconds });
+      app.eventStates.set(event.eventKey, { ...event });
+      updateDetailStatus();
+      updateManagementAccess();
+      renderEvents();
+      renderMetrics();
+      showToast("Gestión registrada correctamente");
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      setBusy(submit, false, "Registrar gestión");
+    }
+  }
+
+  function bindUi() {
+    $("session-person").addEventListener("change", event => {
+      sessionStorage.setItem("centralPersonId", event.target.value);
+      updateManagementAccess();
+    });
+    ["status-filter", "priority-filter"].forEach(id => $(id).addEventListener("change", () => { renderEvents(); renderMetrics(); }));
+    $("search-filter").addEventListener("input", renderEvents);
+    $("start-management").addEventListener("click", () => startSelectedManagement().catch(error => showToast(error.message, true)));
+    $("management-form").addEventListener("submit", completeSelectedManagement);
+    $("apply-history").addEventListener("click", runHistorical);
+    $("history-button").addEventListener("click", () => $("date-from").focus());
+    $("live-button").addEventListener("click", returnToLive);
+    bindAdminUi();
+  }
+
+  function bindAdminUi() {
+    $("admin-button").addEventListener("click", () => { $("admin-modal").hidden = false; $("admin-pin").focus(); });
+    $("close-admin").addEventListener("click", () => { $("admin-modal").hidden = true; });
+    $("admin-login").addEventListener("submit", adminLogin);
+    $("person-form").addEventListener("submit", savePerson);
+    $("rule-form").addEventListener("submit", saveRule);
+    document.querySelectorAll(".admin-tab").forEach(button => button.addEventListener("click", () => switchAdminTab(button.dataset.adminTab)));
+  }
+
+  async function adminLogin(event) {
+    event.preventDefault();
+    const submit = event.submitter;
+    setBusy(submit, true, "Validando…");
+    try {
+      const result = await postOperation("adminLogin", { pin: $("admin-pin").value });
+      app.adminToken = result.adminToken;
+      $("admin-login").hidden = true;
+      $("admin-content").hidden = false;
+      await loadAdminData();
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      setBusy(submit, false, "Ingresar");
+    }
+  }
+
+  async function loadAdminData() {
+    const result = await getJson({ action: "adminData", adminToken: app.adminToken });
+    if (!result.success) throw new Error(result.message || "No se pudo abrir administración");
+    app.personnel = result.personnel || [];
+    app.adminRules = result.rules || [];
+    renderAdminPeople();
+    renderAdminRules();
+    renderPersonnel();
+  }
+
+  function renderAdminPeople() {
+    const container = $("people-list");
+    container.replaceChildren();
+    app.personnel.forEach(person => {
+      const row = adminListRow(person.name, `${person.area} · ${person.active ? "ACTIVO" : "INACTIVO"}`, "Editar", () => fillPersonForm(person));
+      container.appendChild(row);
+    });
+  }
+
+  function renderAdminRules() {
+    const container = $("rules-list");
+    container.replaceChildren();
+    app.adminRules.forEach(rule => {
+      const subtitle = `${rule.priority} · ${rule.active ? "ACTIVA" : "INACTIVA"} · ${rule.geotabRuleId || "SIN ID GEOTAB"}`;
+      container.appendChild(adminListRow(rule.name, subtitle, "Editar", () => fillRuleForm(rule)));
+    });
+  }
+
+  function adminListRow(title, subtitle, actionText, action) {
+    const row = document.createElement("div");
+    row.className = "admin-list-row";
+    const info = document.createElement("div");
+    const strong = document.createElement("strong");
+    strong.textContent = title;
+    const small = document.createElement("small");
+    small.textContent = subtitle;
+    info.append(strong, small);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button secondary";
+    button.textContent = actionText;
+    button.addEventListener("click", action);
+    row.append(info, button);
+    return row;
+  }
+
+  function fillPersonForm(person) {
+    $("person-id").value = person.id;
+    $("person-name").value = person.name;
+    $("person-area").value = person.area;
+    $("person-active").checked = person.active;
+  }
+
+  function fillRuleForm(rule) {
+    $("rule-id").value = rule.id;
+    $("rule-geotab-id").value = rule.geotabRuleId;
+    $("rule-name").value = rule.name;
+    $("rule-category").value = rule.category;
+    $("rule-priority").value = rule.priority;
+    $("rule-active").checked = rule.active;
+  }
+
+  async function savePerson(event) {
+    event.preventDefault();
+    const submit = event.submitter;
+    setBusy(submit, true, "Guardando…");
+    try {
+      await postOperation("savePerson", {
+        adminToken: app.adminToken,
+        personId: $("person-id").value,
+        name: $("person-name").value,
+        area: $("person-area").value,
+        active: $("person-active").checked
+      });
+      event.currentTarget.reset();
+      $("person-id").value = "";
+      $("person-active").checked = true;
+      await loadAdminData();
+      showToast("Personal actualizado");
+    } catch (error) { showToast(error.message, true); }
+    finally { setBusy(submit, false, "Guardar personal"); }
+  }
+
+  async function saveRule(event) {
+    event.preventDefault();
+    const submit = event.submitter;
+    setBusy(submit, true, "Guardando…");
+    try {
+      await postOperation("saveRule", {
+        adminToken: app.adminToken,
+        ruleId: $("rule-id").value,
+        geotabRuleId: $("rule-geotab-id").value,
+        name: $("rule-name").value,
+        category: $("rule-category").value,
+        priority: $("rule-priority").value,
+        active: $("rule-active").checked,
+        sortOrder: 100
+      });
+      event.currentTarget.reset();
+      $("rule-id").value = "";
+      await loadAdminData();
+      renderRuleFilters();
+      showToast("Regla actualizada");
+    } catch (error) { showToast(error.message, true); }
+    finally { setBusy(submit, false, "Guardar regla"); }
+  }
+
+  function switchAdminTab(tab) {
+    document.querySelectorAll(".admin-tab").forEach(button => button.classList.toggle("active", button.dataset.adminTab === tab));
+    $("admin-people").hidden = tab !== "people";
+    $("admin-rules").hidden = tab !== "rules";
+  }
+
+  async function postOperation(action, values) {
+    validateBackendUrl();
+    const operationId = createId();
+    const body = new URLSearchParams({ action, operationId });
+    Object.entries(values || {}).forEach(([key, value]) => body.append(key, value == null ? "" : String(value)));
+    await fetch(CONFIG.googleWebAppUrl, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString()
+    });
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await wait(500);
+      const status = await getJson({ action: "operationStatus", operationId });
+      if (!status.pending) {
+        if (!status.success) throw new Error(status.message || "La operación fue rechazada");
+        return status;
+      }
+    }
+    throw new Error("No se pudo confirmar la operación con Google Sheets");
+  }
+
+  async function getJson(params) {
+    const url = new URL(CONFIG.googleWebAppUrl);
+    Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value == null ? "" : String(value)));
+    url.searchParams.set("_", Date.now());
+    const response = await fetch(url.toString(), { cache: "no-store" });
+    if (!response.ok) throw new Error(`Error del backend (${response.status})`);
+    return response.json();
+  }
+
+  function runHistorical() {
+    if (!$("date-from").value || !$("date-to").value) return showToast("Selecciona las fechas Desde y Hasta", true);
+    if (new Date($("date-from").value) >= new Date($("date-to").value)) return showToast("La fecha Hasta debe ser posterior", true);
+    app.liveMode = false;
+    stopLiveLoop();
+    refreshCycle().catch(error => showToast(error.message, true));
+  }
+
+  function returnToLive() {
+    app.liveMode = true;
+    setDefaultDates();
+    startLiveLoop();
+    refreshCycle().catch(error => showToast(error.message, true));
+  }
+
+  function getQueryRange() {
+    if (!app.liveMode) return { fromDate: new Date($("date-from").value).toISOString(), toDate: new Date($("date-to").value).toISOString() };
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    return { fromDate: start.toISOString(), toDate: "" };
+  }
+
+  function setDefaultDates() {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date();
+    $("date-from").value = localInputValue(start);
+    $("date-to").value = localInputValue(end);
+  }
+
+  function startLiveLoop() {
+    stopLiveLoop();
+    app.timer = setInterval(() => refreshCycle().catch(error => { console.error(error); setConnection("error", "Error de sincronización"); }), CONFIG.liveIntervalMs);
+  }
+
+  function stopLiveLoop() {
+    if (app.timer) clearInterval(app.timer);
+    app.timer = null;
+  }
+
+  function tickElapsed() {
+    document.querySelectorAll("[data-elapsed-for]").forEach(element => {
+      const event = app.events.find(item => item.eventKey === element.dataset.elapsedFor);
+      if (event) element.textContent = displayEventElapsed(event);
+    });
+    if (app.selectedEvent) $("detail-elapsed").textContent = displayEventElapsed(app.selectedEvent);
+    renderMetrics();
+  }
+
+  function displayEventElapsed(event) {
+    if (["GESTIONADO", "DESCARTADO"].includes(event.status) && Number(event.elapsedSeconds) >= 0) return formatElapsed(Number(event.elapsedSeconds));
+    return formatElapsed(secondsBetween(event.activeFrom, new Date().toISOString()));
+  }
+
+  function statusClass(status) {
+    return status === "EN_GESTION" ? "progress" : status === "GESTIONADO" ? "managed" : status === "DESCARTADO" ? "dismissed" : status === "ESCALADO" ? "escalated" : "pending";
+  }
+
+  function statusLabel(status) {
+    return ({ PENDIENTE: "PENDIENTE", EN_GESTION: "EN GESTIÓN", GESTIONADO: "GESTIONADO", DESCARTADO: "DESCARTADO", ESCALADO: "ESCALADO" })[status] || status;
+  }
+
+  function clearDetail() {
+    app.selectedEvent = null;
+    ["detail-rule", "detail-id", "detail-plate", "detail-driver", "detail-date", "detail-value", "detail-zone"].forEach(id => $(id).textContent = "—");
+    updateManagementAccess();
+  }
+
+  function setConnection(type, text) {
+    const status = $("connection-status");
+    status.className = `connection-status ${type}`;
+    status.textContent = text;
+  }
+
+  function showToast(message, isError) {
+    const toast = $("toast");
+    toast.textContent = message;
+    toast.className = `toast${isError ? " error" : ""}`;
+    toast.hidden = false;
+    clearTimeout(showToast.timer);
+    showToast.timer = setTimeout(() => { toast.hidden = true; }, 4500);
+  }
+
+  function setBusy(button, busy, text) {
+    if (!button) return;
+    button.disabled = busy;
+    button.textContent = text;
+  }
+
+  function requireSelectedEvent() {
+    if (!app.selectedEvent) throw new Error("Selecciona un evento");
+    return app.selectedEvent;
+  }
+
+  function requireActiveSelection() {
+    const id = $("session-person").value;
+    if (!id || !app.personnel.some(person => person.id === id && person.active)) throw new Error("Selecciona personal activo");
+    return id;
+  }
+
+  function validateBackendUrl() {
+    if (!CONFIG.googleWebAppUrl || CONFIG.googleWebAppUrl.includes("PEGAR_AQUI")) throw new Error("Configura googleWebAppUrl en app.js");
+  }
+
+  function secondsBetween(from, to) {
+    const start = new Date(from).getTime();
+    const end = new Date(to).getTime();
+    return isFinite(start) && isFinite(end) ? Math.max(0, Math.floor((end - start) / 1000)) : 0;
+  }
+
+  function formatElapsed(totalSeconds) {
+    const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainder = seconds % 60;
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+  }
+
+  function formatDate(value) { return value ? new Date(value).toLocaleString("es-PE") : "—"; }
+  function localDateKey(value) { return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`; }
+  function localInputValue(value) { const offset = value.getTimezoneOffset() * 60000; return new Date(value.getTime() - offset).toISOString().slice(0, 16); }
+  function cleanId(value) { return String(value == null ? "" : value).replace(/[\r\n\s]+/g, "").trim(); }
+  function numberOrNull(value) { const number = Number(value); return isFinite(number) ? number : null; }
+  function validCoordinate(lat, lng) { return lat != null && lng != null && isFinite(lat) && isFinite(lng) && !(lat === 0 && lng === 0); }
+  function createId() { return window.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+  function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+  setInterval(tickElapsed, 1000);
+  installLogoFallback();
+  bindUi();
+  setDefaultDates();
+  initializeMap();
+
+  if (window.geotab && geotab.addin) {
+    geotab.addin.ArdepeCentralAlertas = function () {
+      return {
+        initialize(api, state, callback) { initializeApp(api, callback); },
+        focus() { if (app.map) setTimeout(() => app.map.invalidateSize(), 100); },
+        blur() {}
+      };
+    };
+  } else {
+    setConnection("connecting", "Esperando MyGeotab");
+  }
+})();
