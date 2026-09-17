@@ -2,7 +2,7 @@
   "use strict";
 
   const CONFIG = Object.freeze({
-    googleWebAppUrl: "https://script.google.com/macros/s/AKfycbxH8xtH10bpeLT_vNY5NELldhVTRy2tZfLC8kaD9h_ePrvmhOl6Mz1eNQaqehGCwa_m/exec",
+    googleWebAppUrl: "https://script.google.com/macros/s/AKfycbwWVQbhTIxJ8K2nNQol-w5wTPnOog50I87mjFZrRw1hxPl99QyCRpbnHPMVWjH4ZwOn/exec",
     databaseKey: "ARDEPE",
     allowedGroupIds: ["b2798", "b279A"],
     zoneTypeId: "bFC",
@@ -25,7 +25,11 @@
     liveMode: true,
     timer: null,
     adminToken: "",
-    adminRules: []
+    adminRules: [],
+    historyCache: new Map(),
+    managementCache: new Map(),
+    queryNonce: 0,
+    historyQueryRunning: false
   };
 
   const $ = id => document.getElementById(id);
@@ -85,9 +89,20 @@
     setConnection("connecting", "Sincronizando…");
     const range = getQueryRange();
     await loadBootstrap(range.fromDate);
-    const events = await queryGeotabEvents(range.fromDate, range.toDate);
+    const queryNonce = ++app.queryNonce;
+    const cacheKey = historicalCacheKey(range);
+    const cached = !app.liveMode ? app.historyCache.get(cacheKey) : null;
+    let events;
+    if (cached && Date.now() - cached.createdAt < 300000) {
+      events = cached.events.map(event => ({ ...event }));
+    } else {
+      events = await queryGeotabEvents(range.fromDate, range.toDate, !app.liveMode);
+      if (queryNonce !== app.queryNonce) return;
+      if (!app.liveMode) app.historyCache.set(cacheKey, { createdAt: Date.now(), events: events.map(event => ({ ...event })) });
+    }
+    preserveResolvedContext(events);
     app.events = events.sort((a, b) => new Date(b.activeFrom) - new Date(a.activeFrom));
-    await syncUnknownEvents(app.events);
+    if (app.liveMode) await syncUnknownEvents(app.events);
     mergeStates();
     renderAll();
     setConnection("online", app.liveMode ? "En vivo" : "Consulta histórica");
@@ -104,14 +119,17 @@
     renderRuleFilters();
   }
 
-  async function queryGeotabEvents(fromDate, toDate) {
-    const queries = app.rules.map(async rule => {
+  async function queryGeotabEvents(fromDate, toDate, showProgress) {
+    const groups = [];
+    for (let index = 0; index < app.rules.length; index += 1) {
+      const rule = app.rules[index];
+      if (showProgress) setHistoryProgress(`Consultando ${rule.name} (${index + 1}/${app.rules.length})…`);
       const search = { ruleSearch: { id: rule.geotabRuleId }, fromDate };
       if (toDate) search.toDate = toDate;
       const result = await app.api.call("Get", { typeName: "ExceptionEvent", search });
-      return (result || []).map(event => normalizeEvent(event, rule));
-    });
-    const groups = await Promise.all(queries);
+      groups.push((result || []).map(event => normalizeEvent(event, rule)));
+      if (showProgress && index < app.rules.length - 1) await wait(120);
+    }
     const unique = new Map();
     groups.flat().forEach(event => {
       if (app.devices.has(event.deviceId)) unique.set(event.eventKey, event);
@@ -141,7 +159,8 @@
       startedAt: "",
       closedAt: "",
       elapsedSeconds: 0,
-      operatorId: ""
+      operatorId: "",
+      contextResolved: false
     };
   }
 
@@ -173,13 +192,35 @@
     }
   }
 
+  async function ensureEventStored(event) {
+    if (app.eventStates.has(event.eventKey)) return;
+    await syncUnknownEvents([event]);
+  }
+
   function mergeStates() {
     app.events.forEach(event => {
       const state = app.eventStates.get(event.eventKey);
       if (!state) return;
+      const resolvedDriver = event.driver;
+      const resolvedZone = event.zone;
       Object.assign(event, state);
-      if (!event.driver) event.driver = "POR CONSULTAR";
-      if (!event.zone) event.zone = "POR CONSULTAR";
+      event.driver = state.driver || resolvedDriver || "POR CONSULTAR";
+      event.zone = state.zone || resolvedZone || "POR CONSULTAR";
+    });
+  }
+
+  function preserveResolvedContext(nextEvents) {
+    const previous = new Map(app.events.map(event => [event.eventKey, event]));
+    nextEvents.forEach(event => {
+      const old = previous.get(event.eventKey);
+      if (!old) return;
+      if (old.driver && old.driver !== "POR CONSULTAR") event.driver = old.driver;
+      if (old.zone && old.zone !== "POR CONSULTAR") event.zone = old.zone;
+      if (validCoordinate(old.latitude, old.longitude)) {
+        event.latitude = old.latitude;
+        event.longitude = old.longitude;
+      }
+      event.contextResolved = Boolean(old.contextResolved);
     });
   }
 
@@ -294,12 +335,17 @@
     app.selectedEvent = event;
     if (changed) $("management-form").reset();
     $("detail-rule").textContent = event.ruleName;
-    $("detail-id").textContent = event.geotabEventId;
+    $("detail-reference").textContent = `${event.plate} · ${formatDate(event.activeFrom)}`;
+    $("detail-priority").textContent = event.priority;
+    $("detail-priority").className = `priority-label priority-${String(event.priority).toLowerCase()}`;
     $("detail-plate").textContent = event.plate;
     $("detail-date").textContent = formatDate(event.activeFrom);
     $("detail-value").textContent = event.detectedValue;
     $("detail-driver").textContent = event.driver;
     $("detail-zone").textContent = event.zone;
+    $("detail-operator").textContent = operatorName(event.operatorId);
+    $("detail-started").textContent = formatDate(event.startedAt);
+    $("detail-similar").textContent = `${similarEventsToday(event)} evento(s)`;
     updateDetailStatus();
     updateManagementAccess();
     renderEvents();
@@ -309,7 +355,11 @@
 
   async function loadEventManagement(event) {
     try {
-      const result = await getJson({ action: "eventManagement", eventKey: event.eventKey });
+      let result = app.managementCache.get(event.eventKey);
+      if (!result) {
+        result = await getJson({ action: "eventManagement", eventKey: event.eventKey });
+        if (result.success) app.managementCache.set(event.eventKey, result);
+      }
       if (!result.success || !result.management || !app.selectedEvent || app.selectedEvent.eventKey !== event.eventKey) return;
       const management = result.management;
       $("result").value = management.result;
@@ -330,6 +380,13 @@
   }
 
   async function resolveEventContext(event) {
+    if (event.contextResolved) {
+      if (validCoordinate(event.latitude, event.longitude)) showOnMap(event.latitude, event.longitude);
+      return;
+    }
+    setContextLoading(true);
+    setInlineLoading($("detail-driver"), "Consultando Geotab…");
+    setInlineLoading($("detail-zone"), "Consultando ubicación…");
     try {
       let lat = event.latitude;
       let lng = event.longitude;
@@ -344,12 +401,20 @@
         event.zone = findZoneName(lat, lng) || await reverseGeocode(lat, lng);
       } else event.zone = "UBICACIÓN NO DISPONIBLE";
       event.driver = await getCurrentDriver(event.deviceId);
+      event.contextResolved = true;
       if (app.selectedEvent && app.selectedEvent.eventKey === event.eventKey) {
         $("detail-driver").textContent = event.driver;
         $("detail-zone").textContent = event.zone;
       }
     } catch (error) {
       console.error("No se pudo completar el contexto", error);
+      event.contextResolved = true;
+      if (app.selectedEvent && app.selectedEvent.eventKey === event.eventKey) {
+        $("detail-driver").textContent = event.driver || "NO DISPONIBLE";
+        $("detail-zone").textContent = event.zone || "NO DISPONIBLE";
+      }
+    } finally {
+      setContextLoading(false);
     }
   }
 
@@ -429,11 +494,14 @@
   async function startSelectedManagement() {
     const event = requireSelectedEvent();
     const personId = requireActiveSelection();
-    setBusy($("start-management"), true, "Iniciando…");
+    setBusy($("start-management"), true, "Iniciando gestión…");
     try {
+      await ensureEventStored(event);
       await postOperation("startManagement", { eventKey: event.eventKey, personId });
       Object.assign(event, { status: "EN_GESTION", operatorId: personId, startedAt: new Date().toISOString() });
       app.eventStates.set(event.eventKey, { ...event });
+      $("detail-operator").textContent = operatorName(personId);
+      $("detail-started").textContent = formatDate(event.startedAt);
       updateDetailStatus();
       updateManagementAccess();
       renderEvents();
@@ -449,7 +517,7 @@
     const event = requireSelectedEvent();
     const personId = requireActiveSelection();
     const submit = eventObject.submitter;
-    setBusy(submit, true, "Registrando…");
+    setBusy(submit, true, "Guardando y verificando…");
     try {
       const result = await postOperation("completeManagement", {
         eventKey: event.eventKey,
@@ -470,6 +538,7 @@
       });
       Object.assign(event, { status: result.status, closedAt: new Date().toISOString(), elapsedSeconds: result.elapsedSeconds });
       app.eventStates.set(event.eventKey, { ...event });
+      app.managementCache.delete(event.eventKey);
       updateDetailStatus();
       updateManagementAccess();
       renderEvents();
@@ -491,9 +560,21 @@
     $("search-filter").addEventListener("input", renderEvents);
     $("start-management").addEventListener("click", () => startSelectedManagement().catch(error => showToast(error.message, true)));
     $("management-form").addEventListener("submit", completeSelectedManagement);
-    $("apply-history").addEventListener("click", runHistorical);
-    $("history-button").addEventListener("click", () => $("date-from").focus());
+    $("history-form").addEventListener("submit", runHistorical);
+    $("history-button").addEventListener("click", openHistoryModal);
+    $("close-history").addEventListener("click", closeHistoryModal);
+    $("cancel-history").addEventListener("click", closeHistoryModal);
+    document.querySelectorAll("[data-history-range]").forEach(button => button.addEventListener("click", () => setHistoryPreset(button.dataset.historyRange)));
     $("live-button").addEventListener("click", returnToLive);
+    $("guide-button").addEventListener("click", () => { $("guide-modal").hidden = false; });
+    $("close-guide").addEventListener("click", () => { $("guide-modal").hidden = true; });
+    $("expand-map").addEventListener("click", toggleMapSize);
+    $("history-modal").addEventListener("click", event => {
+      if (event.target === $("history-modal")) closeHistoryModal();
+    });
+    $("guide-modal").addEventListener("click", event => {
+      if (event.target === $("guide-modal")) $("guide-modal").hidden = true;
+    });
     bindAdminUi();
   }
 
@@ -667,19 +748,93 @@
     return response.json();
   }
 
-  function runHistorical() {
-    if (!$("date-from").value || !$("date-to").value) return showToast("Selecciona las fechas Desde y Hasta", true);
-    if (new Date($("date-from").value) >= new Date($("date-to").value)) return showToast("La fecha Hasta debe ser posterior", true);
-    app.liveMode = false;
+  async function runHistorical(event) {
+    event.preventDefault();
+    if (app.historyQueryRunning) return;
+    const from = new Date($("date-from").value);
+    const to = new Date($("date-to").value);
+    if (!isFinite(from) || !isFinite(to)) return showToast("Selecciona las fechas Desde y Hasta", true);
+    if (from >= to) return showToast("La fecha Hasta debe ser posterior", true);
+    if (to - from > 7 * 24 * 60 * 60 * 1000) return showToast("La consulta histórica permite un máximo de 7 días", true);
+    const submit = event.submitter || $("apply-history");
+    app.historyQueryRunning = true;
+    $("close-history").disabled = true;
+    $("cancel-history").disabled = true;
+    setBusy(submit, true, "Consultando…");
+    $("history-progress").hidden = false;
     stopLiveLoop();
-    refreshCycle().catch(error => showToast(error.message, true));
+    app.liveMode = false;
+    $("status-filter").value = $("history-status-filter").value;
+    try {
+      await refreshCycle();
+      $("history-modal").hidden = true;
+      $("history-banner").hidden = false;
+      $("history-range-label").textContent = `${formatDate(from)} — ${formatDate(to)}`;
+      showToast(`Consulta completada: ${app.events.length} evento(s)`);
+    } catch (error) {
+      app.liveMode = true;
+      startLiveLoop();
+      setConnection("error", "Error de consulta");
+      showToast(error.message || "No se pudo consultar el histórico", true);
+    } finally {
+      app.historyQueryRunning = false;
+      $("close-history").disabled = false;
+      $("cancel-history").disabled = false;
+      $("history-progress").hidden = true;
+      setBusy(submit, false, "Consultar");
+    }
   }
 
   function returnToLive() {
+    app.queryNonce += 1;
     app.liveMode = true;
+    $("history-banner").hidden = true;
+    $("status-filter").value = "OPEN";
     setDefaultDates();
     startLiveLoop();
     refreshCycle().catch(error => showToast(error.message, true));
+  }
+
+  function openHistoryModal() {
+    setDefaultDates();
+    $("history-modal").hidden = false;
+    $("date-from").focus();
+  }
+
+  function closeHistoryModal() {
+    if (app.historyQueryRunning) return;
+    $("history-modal").hidden = true;
+  }
+
+  function setHistoryPreset(preset) {
+    const now = new Date();
+    let from = new Date(now);
+    let to = new Date(now);
+    if (preset === "today") from.setHours(0, 0, 0, 0);
+    if (preset === "yesterday") {
+      from.setDate(from.getDate() - 1);
+      from.setHours(0, 0, 0, 0);
+      to = new Date(from);
+      to.setDate(to.getDate() + 1);
+    }
+    if (preset === "7days") {
+      from.setDate(from.getDate() - 7);
+      from.setSeconds(from.getSeconds() + 1);
+    }
+    $("date-from").value = localInputValue(from);
+    $("date-to").value = localInputValue(to);
+  }
+
+  function setHistoryProgress(text) {
+    const container = $("history-progress");
+    if (!container) return;
+    const label = container.querySelector("span:last-child");
+    if (label) label.textContent = text;
+  }
+
+  function historicalCacheKey(range) {
+    const rules = app.rules.map(rule => rule.geotabRuleId).sort().join("|");
+    return `${range.fromDate}|${range.toDate}|${rules}`;
   }
 
   function getQueryRange() {
@@ -731,14 +886,20 @@
 
   function clearDetail() {
     app.selectedEvent = null;
-    ["detail-rule", "detail-id", "detail-plate", "detail-driver", "detail-date", "detail-value", "detail-zone"].forEach(id => $(id).textContent = "—");
+    ["detail-rule", "detail-reference", "detail-priority", "detail-plate", "detail-driver", "detail-date", "detail-value", "detail-operator", "detail-started", "detail-similar", "detail-zone"].forEach(id => $(id).textContent = "—");
     updateManagementAccess();
   }
 
   function setConnection(type, text) {
     const status = $("connection-status");
     status.className = `connection-status ${type}`;
-    status.textContent = text;
+    status.replaceChildren();
+    if (type === "connecting") {
+      const spinner = document.createElement("span");
+      spinner.className = "spinner spinner-small";
+      status.appendChild(spinner);
+    }
+    status.appendChild(document.createTextNode(text));
   }
 
   function showToast(message, isError) {
@@ -753,7 +914,43 @@
   function setBusy(button, busy, text) {
     if (!button) return;
     button.disabled = busy;
-    button.textContent = text;
+    button.replaceChildren();
+    if (busy) {
+      const spinner = document.createElement("span");
+      spinner.className = "spinner spinner-small";
+      button.appendChild(spinner);
+    }
+    button.appendChild(document.createTextNode(text));
+  }
+
+  function setInlineLoading(element, text) {
+    if (!element) return;
+    element.replaceChildren();
+    const spinner = document.createElement("span");
+    spinner.className = "spinner spinner-small inline-spinner";
+    element.append(spinner, document.createTextNode(text));
+  }
+
+  function setContextLoading(loading) {
+    $("map-loading").hidden = !loading;
+  }
+
+  function toggleMapSize() {
+    const panel = document.querySelector(".context-panel");
+    const expanded = panel.classList.toggle("map-expanded");
+    $("expand-map").textContent = expanded ? "Reducir mapa" : "Ampliar mapa";
+    if (app.map) setTimeout(() => app.map.invalidateSize(), 80);
+  }
+
+  function operatorName(operatorId) {
+    if (!operatorId) return "NO ASIGNADO";
+    const person = app.personnel.find(item => item.id === operatorId);
+    return person ? `${person.name} · ${person.area}` : "PERSONAL REGISTRADO";
+  }
+
+  function similarEventsToday(event) {
+    const eventDate = localDateKey(new Date(event.activeFrom));
+    return app.events.filter(item => item.plate === event.plate && item.ruleId === event.ruleId && localDateKey(new Date(item.activeFrom)) === eventDate).length;
   }
 
   function requireSelectedEvent() {
