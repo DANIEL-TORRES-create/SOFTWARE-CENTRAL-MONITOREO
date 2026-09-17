@@ -222,6 +222,9 @@ body { overflow: hidden; }
 .guide-content ol { margin: 0 0 14px; padding-left: 22px; }
 .guide-content li { margin-bottom: 8px; }
 .guide-tip { margin-top: 7px; padding: 8px 10px; border-left: 4px solid var(--info); background: var(--info-soft); }
+.guide-close-rule { margin: 4px 0 13px; padding: 11px 12px; border: 1px solid #badcc9; border-radius: 9px; background: var(--success-soft); color: #105c3a; }
+.guide-close-rule p { margin: 6px 0 0; line-height: 1.4; }
+.guide-status-result { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--surface-soft); line-height: 1.45; }
 .guide-warning { margin: 12px 0 0; padding: 9px 10px; border-radius: 8px; background: var(--warning-soft); color: var(--warning); font-weight: 700; }
 
 @media (max-width: 1400px) and (min-width: 1201px) {
