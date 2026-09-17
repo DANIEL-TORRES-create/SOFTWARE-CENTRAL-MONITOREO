@@ -140,12 +140,18 @@
           <li>Contacta al conductor o supervisor y registra únicamente información confirmada.</li>
           <li>Define resultado, causa y acción inmediata.</li>
           <li>Si queda una acción pendiente, registra seguimiento, responsable y fecha compromiso.</li>
-          <li>Presiona <strong>Registrar gestión</strong> y espera la confirmación.</li>
+          <li>Presiona <strong>Registrar gestión</strong> y espera el mensaje de confirmación. Recién en ese momento se guarda la atención y puede cerrarse el evento.</li>
         </ol>
+        <div class="guide-close-rule">
+          <strong>¿Cuándo se cierra la gestión?</strong>
+          <p><strong>Iniciar gestión</strong> solo reserva el evento para el operador y lo coloca en <strong>EN GESTIÓN</strong>. No lo cierra.</p>
+          <p>Al pulsar <strong>Registrar gestión</strong>, el sistema guarda el formulario, registra la hora de cierre y detiene el contador.</p>
+        </div>
         <div class="guide-tip"><strong>Evento confirmado:</strong> ocurrió y corresponde gestionarlo.</div>
         <div class="guide-tip"><strong>Justificado:</strong> ocurrió, pero existía un motivo operativo válido.</div>
         <div class="guide-tip"><strong>Falsa alerta:</strong> lectura incorrecta, duplicidad o problema de configuración.</div>
         <div class="guide-tip"><strong>Escalado:</strong> necesita intervención de jefatura u otra área.</div>
+        <div class="guide-status-result"><strong>Estado final:</strong> Evento confirmado o Justificado → <strong>GESTIONADO</strong>. Falsa alerta → <strong>DESCARTADO</strong>. Escalado → permanece <strong>ESCALADO</strong> y continúa abierto.</div>
         <p class="guide-warning">No cierres un evento crítico mientras exista una acción inmediata pendiente.</p>
       </div>
     </section>
