@@ -2,7 +2,7 @@
   "use strict";
 
   const CONFIG = Object.freeze({
-    googleWebAppUrl: "https://script.google.com/macros/s/AKfycbwWVQbhTIxJ8K2nNQol-w5wTPnOog50I87mjFZrRw1hxPl99QyCRpbnHPMVWjH4ZwOn/exec",
+    googleWebAppUrl: "https://script.google.com/macros/s/AKfycbxH8xtH10bpeLT_vNY5NELldhVTRy2tZfLC8kaD9h_ePrvmhOl6Mz1eNQaqehGCwa_m/exec",
     databaseKey: "ARDEPE",
     allowedGroupIds: ["b2798", "b279A"],
     zoneTypeId: "bFC",
