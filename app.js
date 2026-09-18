@@ -719,6 +719,7 @@
     $("close-history").addEventListener("click", closeHistoryModal);
     $("cancel-history").addEventListener("click", closeHistoryModal);
     document.querySelectorAll("[data-history-range]").forEach(button => button.addEventListener("click", () => setHistoryPreset(button.dataset.historyRange)));
+    ["date-from", "date-to"].forEach(id => $(id).addEventListener("input", clearHistoryPresetSelection));
     $("live-button").addEventListener("click", returnToLive);
     $("guide-button").addEventListener("click", () => { $("guide-modal").hidden = false; });
     $("close-guide").addEventListener("click", () => { $("guide-modal").hidden = true; });
@@ -971,14 +972,29 @@
       from.setDate(from.getDate() - 1);
       from.setHours(0, 0, 0, 0);
       to = new Date(from);
-      to.setDate(to.getDate() + 1);
+      to.setHours(23, 59, 59, 999);
     }
     if (preset === "7days") {
-      from.setDate(from.getDate() - 7);
-      from.setSeconds(from.getSeconds() + 1);
+      to.setDate(to.getDate() - 1);
+      to.setHours(23, 59, 59, 999);
+      from = new Date(to);
+      from.setDate(from.getDate() - 6);
+      from.setHours(0, 0, 0, 0);
     }
     $("date-from").value = localInputValue(from);
     $("date-to").value = localInputValue(to);
+    document.querySelectorAll("[data-history-range]").forEach(button => {
+      const selected = button.dataset.historyRange === preset;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+  }
+
+  function clearHistoryPresetSelection() {
+    document.querySelectorAll("[data-history-range]").forEach(button => {
+      button.classList.remove("active");
+      button.setAttribute("aria-pressed", "false");
+    });
   }
 
   function setHistoryProgress(text) {
@@ -1006,6 +1022,7 @@
     const end = new Date();
     $("date-from").value = localInputValue(start);
     $("date-to").value = localInputValue(end);
+    clearHistoryPresetSelection();
   }
 
   function startLiveLoop() {
