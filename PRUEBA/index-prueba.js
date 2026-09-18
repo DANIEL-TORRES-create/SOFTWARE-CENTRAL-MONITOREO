@@ -6,7 +6,7 @@
     allowedVehicleGroupIds: ["b2798", "b279A"],
     driverGroupIds: ["b3271"]
   });
-  const app = { api:null, personnel:[], rules:[], devices:new Map(), events:[], selected:null, drivers:null, timer:null };
+  const app = { api:null, personnel:[], rules:[], devices:new Map(), events:[], selected:null, drivers:null, timer:null, evidenceCache:new Map() };
   const $ = id => document.getElementById(id);
 
   async function initialize(api, callback) {
@@ -143,7 +143,18 @@
       const title=document.createElement("strong"); title.textContent=`Respuesta: ${responseLabel(result.response.responseType)}`;
       const text=document.createElement("span"); text.textContent=result.response.comment;
       const meta=document.createElement("small"); meta.textContent=`${result.response.driverName} · ${formatDate(result.response.createdAt)}`;
-      box.append(title,text,meta); box.hidden=false;
+      box.append(title,text,meta);
+      if(result.response.evidenceFileId){
+        const holder=document.createElement("div");holder.className="response-evidence";holder.textContent="Cargando evidencia fotográfica…";box.appendChild(holder);
+        try{
+          let data=app.evidenceCache.get(result.response.evidenceFileId);
+          if(!data){data=await getJson({action:"driverEvidence",requestId:result.response.requestId,fileId:result.response.evidenceFileId});if(data.success)app.evidenceCache.set(result.response.evidenceFileId,data);}
+          if(data&&data.success&&app.selected&&app.selected.eventKey===event.eventKey){holder.replaceChildren();const image=document.createElement("img");image.src=data.dataUrl;image.alt="Evidencia enviada por el conductor";const caption=document.createElement("small");caption.textContent=data.name||result.response.evidenceName||"Evidencia fotográfica";holder.append(image,caption);}
+          else holder.textContent=data&&data.message?data.message:"No se pudo mostrar la evidencia";
+        }catch(error){holder.textContent="No se pudo cargar la evidencia fotográfica";console.error(error);}
+      }
+      if(result.response.evidenceUrl){const link=document.createElement("a");link.href=result.response.evidenceUrl;link.target="_blank";link.rel="noopener";link.textContent="Abrir fotografía en Drive";box.appendChild(link);}
+      box.hidden=false;
     }
   }
 
