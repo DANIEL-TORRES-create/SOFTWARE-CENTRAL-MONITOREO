@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mis alertas · ARDEPE</title><link rel="stylesheet" href="conductor-prueba.css"></head>
+<body>
+  <main class="driver-shell">
+    <header class="driver-header"><img src="assets/logo.png" alt="ARDEPE"><div><h1>Mis alertas</h1><p id="driver-identity">Identificando conductor…</p></div><button id="reload" type="button" aria-label="Actualizar">↻</button></header>
+    <div id="connection" class="connection">Conectando…</div>
+    <section id="task-list" class="task-list"><div class="empty">Consultando solicitudes…</div></section>
+    <section id="task-detail" class="task-detail" hidden>
+      <button id="back" class="back" type="button">‹ Volver</button>
+      <article class="event-card">
+        <span id="task-status" class="badge">NUEVA</span><h2 id="task-rule">Evento</h2>
+        <dl><div><dt>Vehículo</dt><dd id="task-plate">—</dd></div><div><dt>Fecha</dt><dd id="task-date">—</dd></div><div><dt>Valor</dt><dd id="task-value">—</dd></div><div><dt>Ubicación</dt><dd id="task-zone">—</dd></div></dl>
+      </article>
+      <article class="message-card"><small>Mensaje de Monitoreo</small><p id="task-message"></p><span id="task-sender"></span></article>
+      <form id="response-form">
+        <fieldset id="response-fields"><legend>¿Qué ocurrió?</legend>
+          <label><input type="radio" name="responseType" value="RECONOZCO" required><span>Reconozco el evento</span></label>
+          <label><input type="radio" name="responseType" value="JUSTIFICADO"><span>Estuvo justificado</span></label>
+          <label><input type="radio" name="responseType" value="NO_RECONOZCO"><span>No reconozco el evento</span></label>
+          <label><input type="radio" name="responseType" value="EMERGENCIA"><span>Fue una emergencia</span></label>
+        </fieldset>
+        <label class="comment-label">Descargo o explicación<textarea id="comment" rows="5" required placeholder="Explique brevemente lo ocurrido."></textarea></label>
+        <button id="submit-response" class="submit" type="submit">Enviar respuesta</button>
+      </form>
+      <div id="already-answered" class="answered" hidden></div>
+    </section>
+  </main>
+  <div id="toast" class="toast" hidden></div><script src="conductor-prueba.js"></script>
+</body>
+</html>

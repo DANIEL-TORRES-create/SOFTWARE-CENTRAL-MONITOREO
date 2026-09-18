@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prueba de interacción · Central ARDEPE</title>
+  <link rel="stylesheet" href="index-prueba.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <img src="assets/logo.png" alt="ARDEPE">
+      <div><h1>Prueba de interacción con conductor</h1><p>Central de Monitoreo → Geotab Drive</p></div>
+      <span id="connection" class="connection loading">Conectando…</span>
+    </header>
+    <section class="session card">
+      <label>Personal de monitoreo<select id="person"><option value="">Seleccione personal</option></select></label>
+      <button id="refresh" class="button secondary" type="button">Actualizar eventos</button>
+    </section>
+    <section class="workspace">
+      <article class="card event-column">
+        <header><div><h2>Eventos en vivo</h2><p>Seleccione una alerta para notificarla.</p></div><span id="event-count">0</span></header>
+        <div id="event-list" class="event-list"><div class="empty">Consultando Geotab…</div></div>
+      </article>
+      <article class="card interaction-column">
+        <header><div><h2>Enviar al conductor</h2><p id="selected-reference">Seleccione un evento</p></div><span id="request-status" class="status">SIN ENVIAR</span></header>
+        <div id="empty-detail" class="empty detail-empty">Seleccione un evento de la izquierda.</div>
+        <div id="interaction" class="interaction" hidden>
+          <dl class="facts">
+            <div><dt>Evento</dt><dd id="detail-rule">—</dd></div><div><dt>Placa</dt><dd id="detail-plate">—</dd></div>
+            <div><dt>Fecha</dt><dd id="detail-date">—</dd></div><div><dt>Valor</dt><dd id="detail-value">—</dd></div>
+          </dl>
+          <section class="driver-box">
+            <div><small>Conductor destinatario</small><strong id="driver-name">Consultando…</strong><span id="driver-group"></span></div>
+            <button id="search-driver" class="button secondary" type="button">Cambiar</button>
+          </section>
+          <label>Mensaje para el conductor<textarea id="message" rows="4" placeholder="Indique qué debe revisar o responder."></textarea></label>
+          <button id="send" class="button primary" type="button" disabled>Enviar a Geotab Drive</button>
+          <section id="response" class="response" hidden></section>
+        </div>
+      </article>
+    </section>
+  </main>
+  <div id="driver-modal" class="modal-backdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="driver-modal-title">
+      <header><div><h2 id="driver-modal-title">Buscar conductor</h2><p>Busque por nombre, usuario, grupo o ID.</p></div><button id="close-driver" class="close" type="button">×</button></header>
+      <input id="driver-query" type="search" placeholder="Nombre, grupo o ID"><div id="driver-results" class="driver-results"></div>
+    </section>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+  <script src="index-prueba.js"></script>
+</body>
+</html>
