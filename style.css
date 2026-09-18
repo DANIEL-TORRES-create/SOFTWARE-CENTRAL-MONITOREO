@@ -216,6 +216,8 @@ body { overflow: hidden; }
 .modal-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .quick-ranges { display: flex; gap: 7px; flex-wrap: wrap; }
 .quick-ranges button { min-height: 32px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-soft); }
+.quick-ranges button.active,
+.quick-ranges button[aria-pressed="true"] { border-color: var(--brand); background: var(--brand); color: #fff; box-shadow: 0 3px 8px rgba(157, 52, 36, .22); }
 .operation-progress { display: flex; align-items: center; justify-content: center; gap: 9px; padding: 12px; border-radius: 8px; background: var(--info-soft); color: var(--info); font-weight: 700; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .guide-modal { width: min(620px, 100%); }
