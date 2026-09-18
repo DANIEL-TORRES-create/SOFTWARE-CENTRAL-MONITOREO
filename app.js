@@ -19,6 +19,7 @@
     rules: [],
     personnel: [],
     eventStates: new Map(),
+    storedEvents: [],
     events: [],
     selectedEvent: null,
     currentRule: "ALL",
@@ -90,7 +91,7 @@
     if (!app.api) return;
     setConnection("connecting", "Sincronizando…");
     const range = getQueryRange();
-    await loadBootstrap(range.fromDate);
+    await loadBootstrap(range);
     const queryNonce = ++app.queryNonce;
     const cacheKey = historicalCacheKey(range);
     const cached = !app.liveMode ? app.historyCache.get(cacheKey) : null;
@@ -102,6 +103,7 @@
       if (queryNonce !== app.queryNonce) return;
       if (!app.liveMode) app.historyCache.set(cacheKey, { createdAt: Date.now(), events: events.map(event => ({ ...event })) });
     }
+    events = mergeStoredEvents(events, app.storedEvents);
     preserveResolvedContext(events);
     app.events = events.sort((a, b) => new Date(b.activeFrom) - new Date(a.activeFrom));
     if (app.liveMode) await syncUnknownEvents(app.events);
@@ -110,15 +112,49 @@
     setConnection("online", app.liveMode ? "En vivo" : "Consulta histórica");
   }
 
-  async function loadBootstrap(fromDate) {
+  async function loadBootstrap(range) {
     validateBackendUrl();
-    const result = await getJson({ action: "bootstrap", fromDate });
+    const result = await getJson({ action: "bootstrap", mode: app.liveMode ? "live" : "history",
+      fromDate: range.fromDate, toDate: range.toDate });
     if (!result.success) throw new Error(result.message || "No se pudo leer el backend");
     app.personnel = result.personnel || [];
     app.rules = result.rules || [];
+    app.storedEvents = (result.storedEvents || []).map(hydrateStoredEvent);
     app.eventStates = new Map((result.eventStates || []).map(state => [state.eventKey, state]));
     renderPersonnel();
     renderRuleFilters();
+  }
+
+  function hydrateStoredEvent(event) {
+    const rule = app.rules.find(item => item.id === event.ruleId) || {
+      id: event.ruleId, name: event.ruleName, category: ""
+    };
+    const measurementKind = getMeasurementKind(rule);
+    const detected = String(event.detectedValue || "");
+    return {
+      ...event,
+      ruleName: event.ruleName || rule.name || "Evento Geotab",
+      priority: String(event.priority || rule.priority || "MEDIA").toUpperCase(),
+      plate: event.plate || "SIN IDENTIFICAR",
+      latitude: numberOrNull(event.latitude),
+      longitude: numberOrNull(event.longitude),
+      driver: event.driver || "POR CONSULTAR",
+      zone: event.zone || "POR CONSULTAR",
+      status: event.status || "PENDIENTE",
+      measurementKind,
+      contextResolved: Boolean(event.driver && event.driver !== "POR CONSULTAR" && event.zone && event.zone !== "POR CONSULTAR"),
+      measurementResolved: Boolean(detected && !/CONSULTAR|DETECTADO POR REGLA/i.test(detected))
+    };
+  }
+
+  function mergeStoredEvents(geotabEvents, storedEvents) {
+    const merged = new Map((geotabEvents || []).map(event => [event.eventKey, event]));
+    (storedEvents || []).forEach(stored => {
+      const current = merged.get(stored.eventKey);
+      merged.set(stored.eventKey, current ? { ...stored, ...current,
+        operatorName: stored.operatorName, operatorArea: stored.operatorArea } : { ...stored });
+    });
+    return [...merged.values()];
   }
 
   async function queryGeotabEvents(fromDate, toDate, showProgress) {
@@ -332,6 +368,10 @@
       const type = document.createElement("div");
       type.className = "event-card-type";
       type.textContent = event.ruleName;
+      const operator = document.createElement("div");
+      operator.className = "event-card-operator";
+      operator.textContent = operatorName(event.operatorId, event.operatorName, event.operatorArea);
+      operator.hidden = !["GESTIONADO", "DESCARTADO"].includes(event.status);
       const meta = document.createElement("div");
       meta.className = "event-card-meta";
       const priority = document.createElement("span");
@@ -340,7 +380,7 @@
       elapsed.dataset.elapsedFor = event.eventKey;
       elapsed.textContent = displayEventElapsed(event);
       meta.append(priority, elapsed);
-      button.append(head, type, meta);
+      button.append(head, type, operator, meta);
       button.addEventListener("click", () => selectEvent(event, true));
       container.appendChild(button);
     });
@@ -373,7 +413,7 @@
     $("detail-value").textContent = event.detectedValue;
     $("detail-driver").textContent = event.driver;
     $("detail-zone").textContent = event.zone;
-    $("detail-operator").textContent = operatorName(event.operatorId);
+    $("detail-operator").textContent = operatorName(event.operatorId, event.operatorName, event.operatorArea);
     $("detail-started").textContent = formatDate(event.startedAt);
     $("detail-similar").textContent = `${similarEventsToday(event)} evento(s)`;
     updateDetailStatus();
@@ -387,7 +427,7 @@
     try {
       let result = app.managementCache.get(event.eventKey);
       if (!result) {
-        result = await getJson({ action: "eventManagement", eventKey: event.eventKey });
+        result = await getJson({ action: "eventManagement", eventKey: event.eventKey, activeFrom: event.activeFrom });
         if (result.success) app.managementCache.set(event.eventKey, result);
       }
       if (!result.success || !result.management || !app.selectedEvent || app.selectedEvent.eventKey !== event.eventKey) return;
@@ -606,9 +646,11 @@
     try {
       await ensureEventStored(event);
       await postOperation("startManagement", { eventKey: event.eventKey, personId });
-      Object.assign(event, { status: "EN_GESTION", operatorId: personId, startedAt: new Date().toISOString() });
+      const person = app.personnel.find(item => item.id === personId) || {};
+      Object.assign(event, { status: "EN_GESTION", operatorId: personId, operatorName: person.name || "",
+        operatorArea: person.area || "", startedAt: new Date().toISOString() });
       app.eventStates.set(event.eventKey, { ...event });
-      $("detail-operator").textContent = operatorName(personId);
+      $("detail-operator").textContent = operatorName(personId, event.operatorName, event.operatorArea);
       $("detail-started").textContent = formatDate(event.startedAt);
       updateDetailStatus();
       updateManagementAccess();
@@ -645,7 +687,10 @@
         zone: event.zone,
         detectedValue: event.detectedValue
       });
-      Object.assign(event, { status: result.status, closedAt: new Date().toISOString(), elapsedSeconds: result.elapsedSeconds });
+      Object.assign(event, { status: result.status,
+        closedAt: ["GESTIONADO", "DESCARTADO"].includes(result.status) ? new Date().toISOString() : "",
+        elapsedSeconds: result.elapsedSeconds,
+        operatorName: result.operatorName || event.operatorName, operatorArea: result.operatorArea || event.operatorArea });
       app.eventStates.set(event.eventKey, { ...event });
       app.managementCache.delete(event.eventKey);
       updateDetailStatus();
@@ -1053,7 +1098,8 @@
     if (app.map) setTimeout(() => app.map.invalidateSize(), 80);
   }
 
-  function operatorName(operatorId) {
+  function operatorName(operatorId, snapshotName, snapshotArea) {
+    if (snapshotName) return `${snapshotName}${snapshotArea ? ` · ${snapshotArea}` : ""}`;
     if (!operatorId) return "NO ASIGNADO";
     const person = app.personnel.find(item => item.id === operatorId);
     return person ? `${person.name} · ${person.area}` : "PERSONAL REGISTRADO";
@@ -1098,7 +1144,7 @@
   function localInputValue(value) { const offset = value.getTimezoneOffset() * 60000; return new Date(value.getTime() - offset).toISOString().slice(0, 16); }
   function cleanId(value) { return String(value == null ? "" : value).replace(/[\r\n\s]+/g, "").trim(); }
   function normalizeSearchText(value) { return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase(); }
-  function numberOrNull(value) { const number = Number(value); return isFinite(number) ? number : null; }
+  function numberOrNull(value) { if (value == null || value === "") return null; const number = Number(value); return isFinite(number) ? number : null; }
   function validCoordinate(lat, lng) { return lat != null && lng != null && isFinite(lat) && isFinite(lng) && !(lat === 0 && lng === 0); }
   function createId() { return window.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`; }
   function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
