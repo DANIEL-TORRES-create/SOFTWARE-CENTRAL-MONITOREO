@@ -130,7 +130,7 @@
       id: event.ruleId, name: event.ruleName, category: ""
     };
     const measurementKind = getMeasurementKind(rule);
-    const detected = String(event.detectedValue || "");
+    const detected = normalizeStoredDetectedValue(event, measurementKind);
     return {
       ...event,
       ruleName: event.ruleName || rule.name || "Evento Geotab",
@@ -140,11 +140,30 @@
       longitude: numberOrNull(event.longitude),
       driver: event.driver || "POR CONSULTAR",
       zone: event.zone || "POR CONSULTAR",
+      detectedValue: detected,
       status: event.status || "PENDIENTE",
       measurementKind,
       contextResolved: Boolean(event.driver && event.driver !== "POR CONSULTAR" && event.zone && event.zone !== "POR CONSULTAR"),
       measurementResolved: Boolean(detected && !/CONSULTAR|DETECTADO POR REGLA/i.test(detected))
     };
+  }
+
+  function normalizeStoredDetectedValue(event, measurementKind) {
+    const raw = String(event.detectedValue || "").trim();
+    if (measurementKind === "stop") {
+      const start = new Date(event.activeFrom).getTime();
+      const end = new Date(event.activeTo).getTime();
+      if (isFinite(start) && isFinite(end) && end >= start) return formatElapsed(Math.floor((end - start) / 1000));
+      const legacyTime = raw.match(/^1899-12-(?:30|31)T(\d{2}):(\d{2}):(\d{2})/i);
+      if (legacyTime) return `${legacyTime[1]}:${legacyTime[2]}:${legacyTime[3]}`;
+      return raw || "DURACIÓN NO DISPONIBLE";
+    }
+    if (measurementKind === "speed" && /^-?\d+(?:[.,]\d+)?$/.test(raw)) return `${raw.replace(",", ".")} km/h · velocidad máxima`;
+    if (["acceleration", "braking", "cornering"].includes(measurementKind)) {
+      if (/^-?\d+(?:[.,]\d+)?$/.test(raw)) return `${Math.abs(Number(raw.replace(",", "."))).toFixed(2)} G`;
+      return raw.replace(/\s+g(\s|$)/i, " G$1");
+    }
+    return raw;
   }
 
   function mergeStoredEvents(geotabEvents, storedEvents) {
@@ -540,7 +559,7 @@
           peak = readings.reduce((max, reading) => Math.max(max, Math.abs(reading)), 0);
           label = "fuerza lateral máxima";
         }
-        if (isFinite(peak)) value = `${peak.toFixed(2)} g · ${label}`;
+        if (isFinite(peak)) value = `${peak.toFixed(2)} G · ${label}`;
       }
     }
     app.measurementCache.set(event.eventKey, value);
