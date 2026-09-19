@@ -1,0 +1,17 @@
+{
+  "name": "centralArdepe",
+  "supportEmail": "API.DANIEL@NAVISAF.PE",
+  "version": "2.0.0",
+  "items": [
+    {
+      "url": "https://daniel-torres-create.github.io/SOFTWARE-CENTRAL-MONITOREO/centralArdepe.html",
+      "path": "ActivityLink/",
+      "menuName": {
+        "es": "Central de Monitoreo",
+        "en": "Central de Monitoreo"
+      }
+    }
+  ],
+  "isSigned": false,
+  "enableViewSecurityId": true
+}
