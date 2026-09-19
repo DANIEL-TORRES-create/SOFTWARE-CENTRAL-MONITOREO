@@ -7,3 +7,89 @@
 /* Drive has no separate context column. */
 .driver-shell .detail-inline{display:block}
 .queue-row.overdue:not(.selected){box-shadow:inset 3px 0 #b16a13}.queue-row.overdue .meta small{color:#8a510c;font-weight:650}
+
+/* Geotab Drive: mobile application layout */
+.driver-shell{height:100dvh;min-height:100dvh;background:#f4f6f8;overflow-x:hidden}
+.driver-shell .topbar{grid-template-columns:82px minmax(0,1fr);grid-template-rows:auto auto;column-gap:12px;row-gap:2px;padding:10px 14px;background:#fff}
+.driver-shell .logo{grid-row:1/3;width:78px;height:48px;object-fit:contain}
+.driver-shell .title{text-align:left;min-width:0}
+.driver-shell .title h1{font-size:18px;line-height:1.2}
+.driver-shell .title p{font-size:9px;margin-top:2px;white-space:nowrap}
+.driver-shell .identity{grid-column:2;display:flex;align-items:center;gap:8px;text-align:left;font-size:11px;min-width:0}
+.driver-shell .identity .muted{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.driver-shell .connection{font-size:11px;white-space:nowrap}
+.driver-actions{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(70px,1fr));gap:8px;padding:10px 12px;background:#fff}
+.driver-actions button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-width:0;min-height:54px;padding:6px 3px;border-radius:8px;font-size:11px;line-height:1.1}
+.driver-actions .action-icon{display:block;font-size:18px;line-height:18px;font-weight:500}
+.driver-shell .metrics{grid-template-columns:repeat(3,1fr);gap:0;padding:9px 12px;background:#fff}
+.driver-shell .metric{padding:0 10px;min-width:0}
+.driver-shell .metric:first-child{padding-left:0}
+.driver-shell .metric small{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.driver-shell .metric strong{font-size:19px}
+.driver-filters{padding:0 12px 9px;background:#f4f6f8}
+.driver-filters .tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin:0;border-bottom:1px solid var(--line)}
+.driver-filters .tabs button{padding:11px 4px;font-size:12px;text-align:center}
+.filter-disclosure{padding-top:8px}
+.filter-disclosure summary{list-style:none;cursor:pointer;color:#3d566c;font-size:12px;font-weight:650;padding:8px 10px;background:#fff;border:1px solid var(--line);border-radius:6px}
+.filter-disclosure summary::-webkit-details-marker{display:none}
+.filter-disclosure summary::after{content:'⌄';float:right}
+.filter-disclosure[open] summary::after{content:'⌃'}
+.filter-disclosure .filter-row{margin-top:8px}
+.driver-shell .filter-row{grid-template-columns:1fr 1fr;gap:7px}
+.driver-shell .filter-row input{grid-column:1/-1}
+.driver-shell .filter-row button{grid-column:1/-1}
+.driver-shell .workspace{display:block;width:100%;max-width:720px;padding:0 12px 12px;overflow:auto}
+.driver-shell .panel{border-radius:8px;overflow:hidden;min-height:0}
+.driver-shell .panel-heading{min-height:42px;padding:10px 12px}
+.driver-shell .panel-heading h2{font-size:13px}
+.driver-shell .queue-panel .scroll{max-height:none;overflow:visible}
+.driver-shell .queue-row{padding:12px}
+.driver-shell .pager{min-height:40px}
+.driver-shell .management-panel{display:none;min-height:0}
+.driver-shell.case-open .queue-panel{display:none}
+.driver-shell.case-open .management-panel{display:flex}
+.driver-shell.case-open .driver-actions,.driver-shell.case-open .metrics,.driver-shell.case-open .driver-filters,.driver-shell.case-open .history-banner{display:none!important}
+.mobile-case-nav{position:sticky;top:0;z-index:3;background:#fff;border-bottom:1px solid var(--line);padding:7px 10px}
+.mobile-case-nav button{border:0;background:transparent;color:#275b83;padding:5px 2px;min-height:30px;font-size:12px}
+.driver-shell .detail-inline .content{padding:12px}
+.driver-shell .detail-title{font-size:18px;margin:9px 0 3px}
+.driver-shell .facts{gap:10px;margin:12px 0}
+.driver-shell .timing{gap:10px;margin-top:13px}
+.driver-shell .timing strong{font-size:15px}
+.driver-shell .message{border-radius:5px;margin:8px 0}
+.driver-shell .history-banner{display:grid;grid-template-columns:1fr 1fr;gap:7px;padding:9px 12px;font-size:11px}
+.driver-shell .history-banner span{grid-column:1/-1;line-height:1.4}
+.driver-shell .history-banner button{margin:0;padding:7px;min-height:34px;font-size:11px}
+.app-empty{padding:38px 20px!important;font-size:12px}
+.empty-mark{display:grid;place-items:center;width:42px;height:42px;margin:0 auto 12px;border-radius:50%;background:#e6f1eb;color:#2d6952;font-size:22px;font-weight:700}
+.guide-sections{display:grid;gap:18px}
+.guide-sections section{border-bottom:1px solid var(--line);padding-bottom:13px}
+.guide-sections section:last-of-type{border-bottom:0}
+.guide-sections h3{font-size:14px;margin-bottom:9px;color:#2e3c48}
+.guide-sections ol{padding-left:20px;margin:0}
+.guide-sections li,.guide-sections p{line-height:1.55;margin-bottom:8px}
+.guide-extra{white-space:pre-wrap;padding:10px;background:#f5f7f9}
+.setup-empty{text-align:left;padding:24px 20px}
+.setup-empty strong{text-align:center;margin-bottom:14px}
+.setup-empty ol{margin:0 0 14px;padding-left:22px;line-height:1.8}
+.setup-empty span{display:block;padding:9px;background:#f0f6fa;border:1px solid #cbdde9;color:#436075;font-size:11px;text-align:center}
+.operation-start{padding:28px 24px;color:#536271}
+.operation-start h3{font-size:16px;color:#2c3944;margin-bottom:18px}
+.operation-start ol{list-style:none;padding:0;margin:0;display:grid;gap:12px}
+.operation-start li{display:flex;align-items:center;gap:10px;padding-bottom:10px;border-bottom:1px solid #edf0f3}
+.operation-start li span{display:grid;place-items:center;width:24px;height:24px;flex:none;border-radius:50%;background:#f3e6e4;color:var(--brand);font-weight:700}
+.operation-start p{margin-top:20px;line-height:1.5}
+.workflow-strip{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+.workflow-strip span{padding:8px 5px;background:#f8f9fb;color:#5c6975;font-size:10px;text-align:center;font-weight:650}
+
+@media(max-width:740px){
+  .driver-shell .topbar{grid-template-columns:72px minmax(0,1fr);padding:8px 12px}
+  .driver-shell .logo{width:68px;height:42px}
+  .driver-shell .title h1{font-size:17px}
+  .driver-shell .workspace{padding:0 10px 10px}
+  .driver-shell .content{padding:12px}
+  .driver-shell .management-panel{min-height:0}
+  .driver-shell .modal{width:calc(100vw - 16px);max-height:92dvh}
+  .driver-shell .modal .body{padding:15px}
+  .driver-shell .modal header{padding:12px 15px}
+}
