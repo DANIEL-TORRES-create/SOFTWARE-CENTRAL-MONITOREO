@@ -68,7 +68,7 @@
     }
   }
   class LiveService {
-    constructor(api, role) { this.api = api; this.role = role; this.token = ''; this.adminToken = ''; this.eventCache = new Map(); this.diagnosticCache = new Map(); this.running = false; }
+    constructor(api, role) { this.api = api; this.role = role; this.token = ''; this.adminToken = ''; this.eventCache = new Map(); this.diagnosticCache = new Map(); this.running = false; this.reconnecting = null; }
     geotabCall(method, params) {
       return new Promise((resolve,reject)=>{
         let settled=false;
@@ -81,16 +81,34 @@
         }catch(error){fail(error);}
       });
     }
-    async request(params, post = false) {
+    sessionExpired(error) { return /Sesión vencida|Session expired/i.test(String(error&&error.message||error||'')); }
+    async renewSession() {
+      if (!this.reconnecting) this.reconnecting = this.connect().finally(() => { this.reconnecting = null; });
+      return this.reconnecting;
+    }
+    async request(params, post = false, retried = false) {
+      const tokenAtStart=this.token;
+      try { return await this.rawRequest(params,post); }
+      catch(error) {
+        if(!retried&&params.action!=='v2.login'&&this.sessionExpired(error)){
+          if(this.token===tokenAtStart)await this.renewSession();
+          return this.request(params,post,true);
+        }
+        throw error;
+      }
+    }
+    async rawRequest(params, post = false) {
       if (!window.ARDEPE_CONFIG.backendUrl) throw new Error('El backend definitivo aún no está configurado. Esta pantalla no ha enviado datos.');
       const url = new URL(window.ARDEPE_CONFIG.backendUrl);
-      const values = { ...params, token: this.token, apiVersion: '2' };
+      const values = { ...params, token: Object.hasOwn(params,'_token')?params._token:this.token, apiVersion: '2' };delete values._token;
       if (post) {
         try {
         await fetch(url, { method: 'POST', mode: 'no-cors', body: new URLSearchParams(values), signal: AbortSignal.timeout(30000) });
         for (let attempt = 0; attempt < 30; attempt++) {
           await new Promise(resolve => setTimeout(resolve, 800));
-          const status = await this.request({ action: 'v2.operation', operationId: params.operationId, receipt: params.receipt });
+          const status = params.action==='v2.login'
+            ? await this.rawRequest({ action: 'v2.operation', operationId: params.operationId, receipt: params.receipt, _token:'' })
+            : await this.request({ action: 'v2.operation', operationId: params.operationId, receipt: params.receipt });
           if (!status.pending) { if (!status.success) throw new Error(status.message); return status.result; }
         }
         } catch(error) { if(!error.definitive) error.uncertain=true; throw error; }
@@ -145,7 +163,7 @@
     }
     async command(command, personId) {
       const pending=await this.pendingCommand();
-      if(pending && pending.command.operationId!==command.operationId){const error=new Error('Hay un envío sin confirmar. Pulse Recuperar envío antes de continuar.');error.uncertain=true;throw error;}
+      if(pending && pending.command.operationId!==command.operationId){const error=new Error('Hay un envío sin confirmar. Pulse Reintentar envío pendiente antes de continuar.');error.uncertain=true;throw error;}
       // Persist before sending. If storage is full, no request is sent; evidence is never silently lost.
       await this.savePending({command,personId});
       try{
@@ -266,9 +284,13 @@
     async saveConfig(type, value) { return this.request({ action: 'v2.saveConfig', adminToken: this.adminToken, type, value: JSON.stringify(value), operationId: uid(), receipt: uid() }, true); }
     async notify(title,message,key='') {
       const notification=this.api&&this.api.mobile&&this.api.mobile.notification;
-      if(this.role!=='driver'||!notification||!notification.hasPermission||!notification.notify||this.settings&&this.settings.notificationsEnabled===false)return false;
+      if(this.role!=='driver'||!notification||!notification.notify||this.settings&&this.settings.notificationsEnabled===false)return false;
       const storageKey='ardepe-notified-v2:'+this.actor.id;if(key&&sessionStorage.getItem(storageKey)===key)return false;
-      try{if(!await notification.hasPermission())return false;await notification.notify(message,title);if(key)sessionStorage.setItem(storageKey,key);return true;}catch(_){return false;}
+      try{
+        if(notification.hasPermission&&!await notification.hasPermission()&&notification.requestPermission)await notification.requestPermission();
+        await notification.notify(message,title);
+        if(key)sessionStorage.setItem(storageKey,key);return true;
+      }catch(_){return false;}
     }
   }
   window.ArdepeServices = { DemoService, LiveService, defaults, uid };
