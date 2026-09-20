@@ -1,10 +1,10 @@
 {
   "name": "conductorArdepe",
   "supportEmail": "API.DANIEL@NAVISAF.PE",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "items": [
     {
-      "url": "https://daniel-torres-create.github.io/SOFTWARE-CENTRAL-MONITOREO/public/conductorArdepe.html?v=2.1.0",
+      "url": "https://daniel-torres-create.github.io/SOFTWARE-CENTRAL-MONITOREO/public/conductorArdepe.html?v=2.2.0",
       "path": "DriveAppLink/",
       "menuName": {
         "es": "Mis atenciones",
