@@ -69,6 +69,18 @@
   }
   class LiveService {
     constructor(api, role) { this.api = api; this.role = role; this.token = ''; this.adminToken = ''; this.eventCache = new Map(); this.diagnosticCache = new Map(); this.running = false; }
+    geotabCall(method, params) {
+      return new Promise((resolve,reject)=>{
+        let settled=false;
+        const done=value=>{if(!settled){settled=true;resolve(value);}};
+        const fail=error=>{if(!settled){settled=true;reject(error instanceof Error?error:new Error(String(error&&error.message||error||'Error de Geotab')));}};
+        try{
+          const result=this.api.call(method,params,done,fail);
+          if(result&&typeof result.then==='function')result.then(done,fail);
+          else if(result!==undefined)done(result);
+        }catch(error){fail(error);}
+      });
+    }
     async request(params, post = false) {
       if (!window.ARDEPE_CONFIG.backendUrl) throw new Error('El backend definitivo aún no está configurado. Esta pantalla no ha enviado datos.');
       const url = new URL(window.ARDEPE_CONFIG.backendUrl);
@@ -143,9 +155,9 @@
     }
     async devices() {
       if (!this.deviceList) {
-        const rows = await this.api.call('Get', { typeName: 'Device', search: { activeState: 'Active' } });
+        const rows = await this.geotabCall('Get', { typeName: 'Device', search: { activeState: 'Active' } });
         const groups = this.settings.vehicleGroups || window.ARDEPE_CONFIG.vehicleGroups;
-        this.deviceList = rows.filter(d => d.serialNumber !== '000-000-0000' && (d.groups || []).some(g => groups.includes(g.id)));
+        this.deviceList = (Array.isArray(rows)?rows:[]).filter(d => d.serialNumber !== '000-000-0000' && (d.groups || []).some(g => groups.includes(g.id)));
       }
       return this.deviceList;
     }
@@ -163,9 +175,9 @@
     }
     async drivers() {
       if (!this.driverList) {
-        const users = await this.api.call('Get', { typeName: 'User' });
+        const users = await this.geotabCall('Get', { typeName: 'User' });
         const groups = this.settings.driverGroups || window.ARDEPE_CONFIG.driverGroups;
-        this.driverList = users.filter(u => [...(u.driverGroups || []), ...(u.companyGroups || [])].some(g => groups.includes(g.id))).map(u => ({ id: u.id, name: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.name }));
+        this.driverList = (Array.isArray(users)?users:[]).filter(u => [...(u.driverGroups || []), ...(u.companyGroups || [])].some(g => groups.includes(g.id))).map(u => ({ id: u.id, name: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.name }));
       }
       return this.driverList;
     }
@@ -179,7 +191,8 @@
         const rules = (this.rules || []).filter(r => r.active && r.show !== false && r.geotabRuleId && (!ruleId || r.id === ruleId));
         const found = new Map();
         const fetchSlice = async (rule, start, end, depth = 0) => {
-          const rows = await this.api.call('Get', { typeName: 'ExceptionEvent', resultsLimit: 1000, search: { ruleSearch: { id: rule.geotabRuleId }, fromDate: start, toDate: end } });
+          const response = await this.geotabCall('Get', { typeName: 'ExceptionEvent', resultsLimit: 1000, search: { ruleSearch: { id: rule.geotabRuleId }, fromDate: start, toDate: end } });
+          const rows=Array.isArray(response)?response:[];
           if (rows.length >= 1000) {
             if (depth >= 12 || Date.parse(end) - Date.parse(start) < 1000) throw new Error('Demasiados eventos en el intervalo. Reduzca el rango para obtener una consulta completa.');
             const mid = new Date(Math.floor((Date.parse(start) + Date.parse(end)) / 2)).toISOString();
@@ -200,7 +213,8 @@
     async resolve(event) {
       if (!event.rule) return event;
       const start = new Date(Date.parse(event.occurredAt) - 2000).toISOString(), end = new Date(Date.parse(event.activeTo || new Date().toISOString()) + 2000).toISOString();
-      const logs = await this.api.call('Get', { typeName: 'LogRecord', search: { deviceSearch: { id: event.deviceId }, fromDate: start, toDate: end } });
+      const logResponse = await this.geotabCall('Get', { typeName: 'LogRecord', search: { deviceSearch: { id: event.deviceId }, fromDate: start, toDate: end } });
+      const logs=Array.isArray(logResponse)?logResponse:[];
       if (event.rule.kind === 'speed') {
         const samples = logs.filter(l => l.speed != null && Number.isFinite(Number(l.speed))).map(l => Number(l.speed));
         event.measurement = D.measurement('speed', samples.length ? Math.max(...samples) : null, 'km/h');
@@ -208,16 +222,17 @@
         const id = event.rule.kind === 'cornering' ? 'DiagnosticAccelerationSideToSideId' : 'DiagnosticAccelerationForwardBrakingId';
         let actualUnit=this.diagnosticCache.get(id);
         if(!actualUnit){
-          const definitions=await this.api.call('Get',{typeName:'Diagnostic',search:{id}}),definition=definitions[0];
+          const definitionResponse=await this.geotabCall('Get',{typeName:'Diagnostic',search:{id}}),definitions=Array.isArray(definitionResponse)?definitionResponse:[],definition=definitions[0];
           if(!definition||!definition.unitOfMeasure||!definition.unitOfMeasure.id)throw new Error('Geotab no informó la unidad del diagnóstico '+id);
-          const units=await this.api.call('Get',{typeName:'UnitOfMeasure',search:{id:definition.unitOfMeasure.id}}),unit=units[0]||definition.unitOfMeasure;
+          const unitResponse=await this.geotabCall('Get',{typeName:'UnitOfMeasure',search:{id:definition.unitOfMeasure.id}}),units=Array.isArray(unitResponse)?unitResponse:[],unit=units[0]||definition.unitOfMeasure;
           const label=((unit.name||'')+' '+(unit.abbreviation||'')+' '+unit.id).toLowerCase();
           actualUnit=/met.*second|m\/s|acceleration/.test(label)?'m/s2':/(^|\s)g($|\s)|gravity|gravities/.test(label)?'G':'';
           if(!actualUnit)throw new Error('Unidad de diagnóstico no reconocida: '+(unit.name||unit.id));
           this.diagnosticCache.set(id,actualUnit);
         }
         if(event.rule.sourceUnit!==actualUnit)throw new Error('La regla '+event.rule.name+' está configurada en '+event.rule.sourceUnit+' pero Geotab informa '+actualUnit);
-        const rows = await this.api.call('Get', { typeName: 'StatusData', search: { deviceSearch: { id: event.deviceId }, diagnosticSearch: { id }, fromDate: start, toDate: end } });
+        const statusResponse = await this.geotabCall('Get', { typeName: 'StatusData', search: { deviceSearch: { id: event.deviceId }, diagnosticSearch: { id }, fromDate: start, toDate: end } });
+        const rows=Array.isArray(statusResponse)?statusResponse:[];
         const samples = rows.filter(r => r.data != null && Number.isFinite(Number(r.data))).map(r => Number(r.data));
         let peak = null;
         if (samples.length) peak = event.rule.kind === 'braking' ? Math.min(...samples) : event.rule.kind === 'acceleration' ? Math.max(...samples) : Math.max(...samples.map(Math.abs));
@@ -226,10 +241,12 @@
       const point = logs.find(l => Number.isFinite(l.latitude) && Number.isFinite(l.longitude));
       if (point) {
         event.latitude = point.latitude; event.longitude = point.longitude;
-        const addresses = await this.api.call('GetAddresses', { coordinates: [{ x: point.longitude, y: point.latitude }] });
+        const addressResponse = await this.geotabCall('GetAddresses', { coordinates: [{ x: point.longitude, y: point.latitude }] });
+        const addresses=Array.isArray(addressResponse)?addressResponse:[];
         event.location = addresses[0] && addresses[0].formattedAddress || point.latitude + ', ' + point.longitude;
       }
-      const changes = await this.api.call('Get', { typeName: 'DriverChange', search: { deviceSearch: { id: event.deviceId }, fromDate: event.occurredAt, toDate: event.activeTo || new Date().toISOString(), includeOverlappedChanges: true } });
+      const changeResponse = await this.geotabCall('Get', { typeName: 'DriverChange', search: { deviceSearch: { id: event.deviceId }, fromDate: event.occurredAt, toDate: event.activeTo || new Date().toISOString(), includeOverlappedChanges: true } });
+      const changes=Array.isArray(changeResponse)?changeResponse:[];
       const change = changes.filter(c => c.dateTime <= event.occurredAt).sort((a, b) => a.dateTime.localeCompare(b.dateTime)).pop();
       if (change && change.driver) {
         const driver = (await this.drivers()).find(d => d.id === change.driver.id);
