@@ -15,7 +15,8 @@
   const TYPES = ['Accidente', 'Incidente', 'Falla vehículo', 'Condición peligrosa vía', 'Emergencia operativa', 'Otro'];
   const CAUSES = ['Conducta insegura', 'Condición de la vía', 'Emergencia operativa', 'Falla del vehículo', 'Tránsito', 'Instrucción operativa', 'No determinada'];
   const ACTIONS = ['Recomendación', 'Capacitación', 'Revisión técnica', 'Comunicar supervisor', 'Escalar jefatura', 'Seguimiento operaciones', 'No requiere'];
-  const CHANNELS = ['Drive', 'Teléfono', 'Supervisor', 'Otro', 'Sin respuesta', 'No aplica'];
+  // "Drive" remains accepted so historical ledger rows can always be replayed.
+  const CHANNELS = ['Geotab Drive', 'Drive', 'Teléfono', 'Supervisor', 'Otro', 'Sin respuesta', 'No aplica'];
   const PRIORITIES = ['CRITICA', 'ALTA', 'MEDIA', 'BAJA'];
   const FOLLOW_STATES = ['EN_SEGUIMIENTO', 'CAPACITACION_PENDIENTE', 'REVISION_TECNICA_PENDIENTE', 'ESCALADO'];
   const FILE_TYPES = {
@@ -99,7 +100,7 @@
   function apply(current, command, actor, now) {
     required(command.operationId, 'Operación', 100);
     const payload = command.payload || {}, type = command.type;
-    if (payload.attachments && (!Array.isArray(payload.attachments) || payload.attachments.length && type !== 'message')) throw new Error('Adjunte la evidencia a un mensaje');
+    if (payload.attachments && (!Array.isArray(payload.attachments) || payload.attachments.length && !['message','create'].includes(type))) throw new Error('Adjunte la evidencia a un mensaje');
     if (!Number.isFinite(Date.parse(now))) throw new Error('Fecha de servidor inválida');
     const data = current ? JSON.parse(JSON.stringify(current)) : null;
     if (!data) {
@@ -112,7 +113,7 @@
       if (origin !== 'GEOTAB' && !TYPES.includes(payload.type)) throw new Error('Tipo de caso inválido');
       if (actor.role === 'driver' && payload.eventKey) throw new Error('Solo Central puede asociar eventos Geotab');
       const event = payload.eventKey ? eventRef(payload) : null;
-      return {
+      const created = {
         id: command.caseId, version: 1, origin, eventKeys: event ? [event.key] : [], events: event ? [event] : [],
         title: required(payload.title || payload.type, 'Motivo', 200), type: payload.type || 'Evento Geotab',
         priority: payload.priority, occurredAt: new Date(payload.occurredAt).toISOString(), createdAt: now, updatedAt: now,
@@ -130,6 +131,16 @@
         messages: [], managements: [], attachments: [], audit: [{ type: 'create', actor: actor.name, at: now }],
         transitions: [{ from: '', to: actor.role === 'driver' ? 'NUEVO' : 'EN_GESTION', at: now }]
       };
+      const initialText=String(payload.initialMessage||'').trim();
+      if(initialText || payload.attachments && payload.attachments.length){
+        const messageId=command.operationId+':initial';
+        const message={id:messageId,authorId:actor.role==='driver'?actor.id:actor.person.id,author:actor.role==='driver'?actor.name:actor.person.name,role:actor.role,text:required(initialText||'Evidencia inicial del caso','Mensaje'),at:now,requiresResponse:actor.role==='central'&&Boolean(payload.requiresResponse)};
+        created.messages.push(message);
+        if(actor.role==='driver'){created.lastDriverMessageAt=now;created.firstResponseAt=now;}
+        else{created.lastCentralMessageAt=now;if(message.requiresResponse){created.status='ESPERANDO_CONDUCTOR';created.transitions.push({from:'EN_GESTION',to:'ESPERANDO_CONDUCTOR',at:now});created.waitingSince=now;}}
+        (payload.attachments||[]).forEach(file=>{validateAttachment(file);created.attachments.push({...file,messageId,caseId:created.id,driverId:created.driverId,at:now});});
+      }
+      return created;
     }
     if (!actorCanRead(actor, data)) throw new Error('Caso no disponible para este conductor');
     if (command.version !== data.version) throw new Error('El caso cambió. Actualice antes de volver a guardar.');
@@ -154,8 +165,8 @@
       if (!RESULTS.includes(payload.result) || !CAUSES.includes(payload.cause) || !CHANNELS.includes(payload.channel) || !ACTIONS.includes(payload.action)) throw new Error('Complete resultado, causa, canal y acción');
       const next = payload.status;
       if (!['EN_GESTION', 'FINALIZADA'].concat(FOLLOW_STATES).includes(next)) throw new Error('Estado de gestión inválido');
-      required(payload.summary, 'Resumen'); required(payload.immediateAction, 'Acción inmediata');
-      if (FOLLOW_STATES.includes(next)) { required(payload.owner, 'Responsable de seguimiento'); if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.dueDate || '')) throw new Error('Fecha compromiso obligatoria'); }
+      required(payload.summary, 'Resumen y observaciones'); required(payload.immediateAction, 'Acción realizada');
+      if (FOLLOW_STATES.includes(next)) { required(payload.owner, 'Responsable de seguimiento'); if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.dueDate || '')) throw new Error('Fecha límite de seguimiento obligatoria'); }
       data.managements.push({ ...payload, id: command.operationId, person: actor.person, at: now });
       data.result = payload.result; data.status = next;
       if (next === 'FINALIZADA') data.finalizedAt = now;
