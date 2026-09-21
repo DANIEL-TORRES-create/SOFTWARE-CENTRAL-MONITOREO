@@ -113,6 +113,7 @@
 #ardepe-root .shell:not(.driver-shell) .filters{margin:0 18px;padding:0 0 10px;background:#fff;border:1px solid #d5dde5;border-radius:7px;overflow:hidden;box-shadow:0 2px 7px #22394c0a}
 #ardepe-root .shell:not(.driver-shell) .filters .tabs{padding:0 14px;background:#f4f7f9}
 #ardepe-root .shell:not(.driver-shell) .filter-row{padding:0 12px}
+@media(min-width:741px){#ardepe-root .central-filter-row{grid-template-columns:210px 210px 160px 1fr 90px}}
 #ardepe-root .shell:not(.driver-shell) .workspace{padding-top:12px;background:#e9eef3}
 #ardepe-root .shell:not(.driver-shell) .panel{border-color:#ccd6df;border-radius:7px;box-shadow:0 3px 12px #20394c12}
 #ardepe-root .shell:not(.driver-shell) .panel-heading{background:#263947;color:#fff;border-bottom:0}
