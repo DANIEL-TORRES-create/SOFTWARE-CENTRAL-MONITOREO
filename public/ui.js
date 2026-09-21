@@ -100,7 +100,7 @@
         this.renderList(); this.metrics();
         if (this.selected && this.selected.version) {
           const fresh = this.cases.find(c => c.id === this.selected.id);
-          if (fresh && fresh.version !== this.selected.version) { this.selected = fresh; this.renderContext(); this.renderWork(true); }
+          if (fresh && fresh.version !== this.selected.version) { this.selected = fresh;if(!this.hasDraft()){this.renderContext();this.renderWork(true);} }
         }
         await this.updateRecovery();
         this.status(this.demo ? 'Demostración conectada' : 'Conectado · ' + new Date().toLocaleTimeString('es-PE'));
@@ -135,7 +135,7 @@
       }).sort((a,b) => D.PRIORITIES.indexOf(a.priority) - D.PRIORITIES.indexOf(b.priority) || a.occurredAt.localeCompare(b.occurredAt));
     }
     unread(c) { return this.role === 'driver' ? c.lastCentralMessageAt > (c.readByDriverAt || '') : c.lastDriverMessageAt > (c.readByCentralAt || ''); }
-    hasDraft(){const work=this.$('work');if(!work)return false;return [...work.querySelectorAll('textarea')].some(el=>el.value.trim())||[...work.querySelectorAll('input[type=file]')].some(el=>el.files&&el.files.length);}
+    hasDraft(){const work=this.$('work');if(!work)return false;return work.dataset.dirty==='1'||[...work.querySelectorAll('textarea')].some(el=>el.value.trim())||[...work.querySelectorAll('input[type=file]')].some(el=>el.files&&el.files.length);}
     clearSelection(force=false) {
       if(this.selected&&!force&&this.hasDraft()&&!window.confirm('Hay información sin enviar. ¿Desea cerrar la vista y descartarla?'))return false;
       this.selected=null;const shell=document.querySelector('.driver-shell');if(shell)shell.classList.remove('case-open');
@@ -145,7 +145,7 @@
     }
     renderList() {
       const rows = this.filtered(), pages = Math.max(1, Math.ceil(rows.length / 25)); this.page = Math.min(this.page, pages - 1);
-      if(this.selected&&!rows.some(row=>row.id===this.selected.id)){this.clearSelection(true);return;}
+      if(this.selected&&!rows.some(row=>row.id===this.selected.id)&&!this.hasDraft()){this.clearSelection(true);return;}
       this.$('count').textContent = rows.length + ' casos'; this.$('page').textContent = (this.page + 1) + ' / ' + pages;
       this.$('prev').disabled = this.page === 0; this.$('next').disabled = this.page >= pages - 1 && !(this.mode==='cases'&&this.historyNextToken);
       this.$('page').parentElement.hidden=pages<=1&&!(this.mode==='cases'&&this.historyNextToken);
@@ -190,6 +190,7 @@
     renderContext() { this.$('context').innerHTML = this.contextHTML(this.selected, false); this.tick(); }
     renderWork(preserve = false) {
       const c = this.selected; if (!c) return;
+      const work=this.$('work'),dirty=preserve&&work.dataset.dirty==='1',managementOpen=preserve&&Boolean(work.querySelector('#a-manage-form')&&work.querySelector('#a-manage-form').closest('details').open);
       const saved = {};
       if (preserve) this.$('work').querySelectorAll('input:not([type=file]),textarea,select').forEach(el => { saved[el.name] = el.type === 'checkbox' ? el.checked : el.value; });
       const fileInput = preserve ? this.$('work').querySelector('input[type=file]') : null;
@@ -207,6 +208,7 @@
         (c.managements && c.managements.length ? '<p class="section-label">Gestiones registradas</p>' + c.managements.map(m => this.managementRecordHTML(m,c)).join('') : '') + '</div>';
       if (preserve) this.$('work').querySelectorAll('input:not([type=file]),textarea,select').forEach(el => { if (Object.hasOwn(saved,el.name)) { if (el.type === 'checkbox') el.checked = saved[el.name]; else el.value = saved[el.name]; } });
       if (fileInput && this.$('work').querySelector('input[type=file]')) this.$('work').querySelector('input[type=file]').replaceWith(fileInput);
+      if(managementOpen&&this.$('manage-form'))this.$('manage-form').closest('details').open=true;work.dataset.dirty=dirty?'1':'';work.oninput=()=>{work.dataset.dirty='1';};
       if (this.$('take')) this.$('take').onclick = () => this.run(this.$('take'), stage => this.take(stage));
       if (this.$('mobile-back')) this.$('mobile-back').onclick = () => this.closeMobileCase();
       if (this.$('change-driver')) this.$('change-driver').onclick = () => this.driverDialog();
@@ -215,7 +217,7 @@
       if (this.$('manage-form')) this.$('manage-form').onsubmit = event => { event.preventDefault(); const payload = Object.fromEntries(new FormData(event.currentTarget)); this.run(event.submitter, async stage => {stage('Guardando…');await this.command('manage',payload,this.selected,stage);this.renderWork();this.toast(payload.status==='FINALIZADA'?'Gestión finalizada':'Gestión registrada');}); };
       this.$('work').querySelectorAll('[data-evidence]').forEach(button => button.onclick = () => this.run(button, () => this.showEvidence(c.attachments.find(a => a.id === button.dataset.evidence),button)));
       if(this.$('associate'))this.$('associate').onclick=()=>this.associateDialog();
-      if(this.$('manage-status')){const toggle=()=>{const follow=D.FOLLOW_STATES.includes(this.$('manage-status').value);this.$('follow-fields').hidden=!follow;this.$('follow-fields').querySelectorAll('input').forEach(input=>input.required=follow);};this.$('manage-status').onchange=toggle;toggle();}
+      if(this.$('manage-status')){const toggle=()=>{const follow=D.FOLLOW_STATES.includes(this.$('manage-status').value);this.$('follow-date').hidden=!follow;this.$('manage-form').elements.owner.required=follow;this.$('manage-form').elements.dueDate.required=follow;};this.$('manage-status').onchange=toggle;toggle();}
       if(!sendAllowed && c.version && !closed)this.$('messages').insertAdjacentHTML('afterend','<p class="info">La regla no permite enviar mensajes al conductor. Puede registrar la gestión interna.</p>');
       this.tick();
     }
@@ -232,7 +234,7 @@
       return '<article class="management-record"><header><strong>'+esc(m.person&&m.person.name||'Personal de Monitoreo')+'</strong><small>Fecha y hora de gestión: '+date(m.at)+'</small></header><dl>'+fields.filter(([,value])=>value).map(([label,value])=>'<div><dt>'+esc(label)+'</dt><dd>'+esc(value)+'</dd></div>').join('')+(m.status==='FINALIZADA'?'<div><dt>Fecha y hora de cierre</dt><dd>'+date(c.finalizedAt||m.at)+'</dd></div>':'')+'</dl></article>';
     }
     managementHTML(enabled) {
-      return '<details class="section-box"><summary>Evaluación, acciones y finalización</summary><form id="a-manage-form" class="form-stack"><fieldset class="form-stack" ' + (!enabled ? 'disabled' : '') + '><div class="two"><label>Resultado<select name="result" required><option value="">Seleccionar</option>' + options(D.RESULTS) + '</select></label><label>Canal de atención<select name="channel">' + options(D.CHANNELS.filter(channel=>channel!=='Drive')) + '</select></label></div><label>Causa identificada<select name="cause">' + options(D.CAUSES,'No determinada') + '</select></label><label>Tipo de acción<select name="action">' + options(D.ACTIONS) + '</select></label><label>Acción realizada<textarea name="immediateAction" required placeholder="Indique en un solo campo qué se hizo."></textarea></label><label>Estado al guardar<select id="a-manage-status" name="status"><option value="EN_GESTION">Continuar en gestión</option>' + D.FOLLOW_STATES.map(s => '<option value="' + s + '">' + D.STATES[s] + '</option>').join('') + '<option value="FINALIZADA">Atención finalizada</option></select></label><div id="a-follow-fields" class="two" hidden><label>Responsable de seguimiento<input name="owner"></label><label>Fecha límite de seguimiento<input name="dueDate" type="date"></label></div><label>Resumen y observaciones<textarea name="summary" required placeholder="Resuma la atención y agregue aquí cualquier observación necesaria."></textarea></label><button type="submit" class="primary">Registrar gestión</button></fieldset></form></details>';
+      return '<details class="section-box"><summary>Evaluación, acciones y finalización</summary><form id="a-manage-form" class="form-stack"><fieldset class="form-stack" ' + (!enabled ? 'disabled' : '') + '><div class="two"><label>Resultado<select name="result" required><option value="">Seleccionar</option>' + options(D.RESULTS) + '</select></label><label>Canal de atención<select name="channel">' + options(D.CHANNELS.filter(channel=>channel!=='Drive')) + '</select></label></div><label>Causa identificada<select name="cause">' + options(D.CAUSES,'No determinada') + '</select></label><label>Tipo de acción<select name="action">' + options(D.ACTIONS) + '</select></label><label>Acción realizada<textarea name="immediateAction" required placeholder="Indique en un solo campo qué se hizo."></textarea></label><label>Estado al guardar<select id="a-manage-status" name="status"><option value="EN_GESTION">Continuar en gestión</option>' + D.FOLLOW_STATES.map(s => '<option value="' + s + '">' + D.STATES[s] + '</option>').join('') + '<option value="FINALIZADA">Atención finalizada</option></select></label><label>Responsable de seguimiento<input name="owner" placeholder="Persona responsable del seguimiento"></label><label id="a-follow-date" hidden>Fecha límite de seguimiento<input name="dueDate" type="date"></label><label>Resumen y observaciones<textarea name="summary" required placeholder="Resuma la atención y agregue aquí cualquier observación necesaria."></textarea></label><button type="submit" class="primary">Registrar gestión</button></fieldset></form></details>';
     }
     tick() { if (!this.selected || !this.mounted) return; const c = this.selected, times = c.version ? D.times(c,new Date().toISOString()) : { total:D.seconds(c.occurredAt,new Date().toISOString()),toStart:D.seconds(c.occurredAt,new Date().toISOString()),waiting:0,followUp:0 }; document.querySelectorAll('[data-time]').forEach(el => el.textContent = D.elapsed(times[el.dataset.time])); }
     async command(type, payload, current = this.selected, onProgress) {
@@ -337,8 +339,7 @@
       if(!cases.length)throw new Error('No hay atenciones guardadas para exportar');
       if(cases.length>100)throw new Error('Filtre la consulta a un máximo de 100 casos por exportación');
       const rows=[];for(const item of cases)rows.push(await this.service.detail(item.id));
-      const logoResponse=await fetch(new URL('assets/logo.png',location.href));if(!logoResponse.ok)throw new Error('No se pudo cargar el logo para el PDF');const logoBytes=new Uint8Array(await logoResponse.arrayBuffer());
-      const bytes=await window.ArdepePDF.generate(rows,file=>this.service.evidence(file),new Date().toISOString(),logoBytes);
+      const bytes=await window.ArdepePDF.generate(rows,file=>this.service.evidence(file));
       const url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'})),link=document.createElement('a');
       link.href=url;link.download='ARDEPE_atenciones_'+D.limaDay(new Date())+'.pdf';link.hidden=true;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
       this.toast('PDF generado con '+rows.length+' atención(es)');
