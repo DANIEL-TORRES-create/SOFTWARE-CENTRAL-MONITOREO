@@ -119,6 +119,15 @@
 #ardepe-root .shell:not(.driver-shell) .panel-heading h2,#ardepe-root .shell:not(.driver-shell) .panel-heading span,#ardepe-root .shell:not(.driver-shell) .panel-heading small{color:#fff}
 #ardepe-root .shell:not(.driver-shell) .operation-start li span{background:#b3342b;color:#fff}
 #ardepe-root .shell:not(.driver-shell) .workflow-strip span{background:#edf2f6;color:#314d61}
+#ardepe-root .panel-heading-actions{display:flex;align-items:center;gap:8px;min-width:0}
+#ardepe-root button.close-view{border:0;background:transparent;color:inherit;font-size:20px;line-height:1;padding:2px 6px;min-height:28px}
+#ardepe-root button.close-view:hover{background:#ffffff22}
+#ardepe-root .management-record{border:1px solid var(--line);border-left:4px solid #314d61;border-radius:4px;padding:12px;margin:10px 0;background:#f8fafb}
+#ardepe-root .management-record header{display:flex;justify-content:space-between;gap:10px;align-items:start;margin-bottom:10px}
+#ardepe-root .management-record dl{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0}
+#ardepe-root .management-record dt{font-size:10px;color:var(--muted);margin-bottom:3px}
+#ardepe-root .management-record dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-weight:600}
+@media(max-width:740px){#ardepe-root .management-record dl{grid-template-columns:1fr}#ardepe-root .management-record header{display:grid}#ardepe-root .toast{bottom:calc(12px + env(safe-area-inset-bottom))}}
 
 /* Help center */
 #ardepe-root .guide-browser{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px}
