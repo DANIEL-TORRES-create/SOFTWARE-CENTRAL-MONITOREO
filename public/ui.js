@@ -43,7 +43,7 @@
       const tabs = (driver ? [['ALL','Pendientes'],['NEW','Sin leer'],['DONE','Finalizados']] : [['GEOTAB','Alertas Geotab'],['CENTRAL','Solicitudes de Central'],['CONDUCTOR','Reportes del conductor']]).map(([id,label]) => '<button data-origin="' + id + '" class="' + (id === this.origin ? 'active' : '') + '">' + label + '<span class="tab-count" data-origin-count="'+id+'"></span></button>').join('');
       const filters = driver
         ? '<section class="filters driver-filters"><nav class="tabs" id="a-tabs" aria-label="Casos">' + tabs + '</nav><details class="filter-disclosure"><summary>Buscar y filtrar</summary><div class="filter-row"><select id="a-state" aria-label="Estado"><option value="ALL">Todos los estados activos</option><option value="OLD">Pendientes anteriores</option>' + Object.entries(D.STATES).map(([id,label]) => '<option value="' + id + '">' + label + '</option>').join('') + '</select><select id="a-priority" aria-label="Prioridad"><option value="ALL">Todas las prioridades</option>' + options(D.PRIORITIES) + '</select><input id="a-search" type="search" placeholder="Buscar vehículo o motivo" aria-label="Buscar casos"><button id="a-refresh">Actualizar</button></div></details></section>'
-        : '<section class="filters"><nav class="tabs" id="a-tabs" aria-label="Origen">' + tabs + '</nav><div class="filter-row"><select id="a-state" aria-label="Estado"><option value="ALL">Todos los estados activos</option><option value="OLD">Pendientes anteriores</option>' + Object.entries(D.STATES).map(([id,label]) => '<option value="' + id + '">' + label + '</option>').join('') + '</select><select id="a-priority" aria-label="Prioridad"><option value="ALL">Todas las prioridades</option>' + options(D.PRIORITIES) + '</select><input id="a-search" type="search" placeholder="Buscar placa, conductor o motivo" aria-label="Buscar casos"><button id="a-refresh">Actualizar</button></div></section>';
+        : '<section class="filters"><nav class="tabs" id="a-tabs" aria-label="Origen">' + tabs + '</nav><div class="filter-row central-filter-row"><select id="a-rule" aria-label="Tipo de alerta"><option value="ALL">Todas las alertas Geotab</option></select><select id="a-state" aria-label="Estado"><option value="ALL">Todos los estados activos</option><option value="OLD">Pendientes anteriores</option>' + Object.entries(D.STATES).map(([id,label]) => '<option value="' + id + '">' + label + '</option>').join('') + '</select><select id="a-priority" aria-label="Prioridad"><option value="ALL">Todas las prioridades</option>' + options(D.PRIORITIES) + '</select><input id="a-search" type="search" placeholder="Buscar placa, conductor o motivo" aria-label="Buscar casos"><button id="a-refresh">Actualizar</button></div></section>';
       return '<div class="shell ' + (driver ? 'driver-shell' : '') + '">' +
         '<header class="topbar"><img class="logo" src="' + logo + '" alt="ARDEPE SAC"><div class="title"><h1>' + (driver ? 'Mis atenciones' : 'Central Integral de Monitoreo') + '</h1><p>ARDEPE · Seguridad vial</p></div>'+(driver?'<button id="a-drive-back" class="drive-back" aria-label="Volver al panel de Geotab Drive" title="Volver a Geotab Drive">←</button>':'')+'<div class="identity"><span id="a-connection" class="connection">Preparando conexión</span><div id="a-identity" class="muted"></div></div></header>' +
         (this.demo ? '<div class="demo-banner"><strong>DEMOSTRACIÓN LOCAL</strong><span>Datos simulados. No envía información real.</span><a target="_blank" href="' + (driver ? 'centralArdepe' : 'conductorArdepe') + '.html?demo=1">Abrir ' + (driver ? 'Central' : 'vista del conductor') + '</a></div>' : '') +
@@ -56,8 +56,8 @@
     }
     bind() {
       this.$('refresh').onclick = () => this.run(this.$('refresh'), () => this.refresh());
-      this.$('tabs').onclick = event => { const button = event.target.closest('[data-origin]'); if (!button || button.dataset.origin===this.origin) return; if(!this.clearSelection())return; this.origin = button.dataset.origin; this.page = 0; this.$('tabs').querySelectorAll('button').forEach(b => b.classList.toggle('active', b === button)); this.renderList(); };
-      ['state','priority','search'].forEach(id => this.$(id).addEventListener('input', () => { this.page = 0; this.renderList(); }));
+      this.$('tabs').onclick = event => { const button = event.target.closest('[data-origin]'); if (!button || button.dataset.origin===this.origin) return; if(!this.clearSelection())return; this.origin = button.dataset.origin; this.page = 0; this.$('tabs').querySelectorAll('button').forEach(b => b.classList.toggle('active', b === button)); this.updateRuleFilter(); this.renderList(); };
+      ['rule','state','priority','search'].filter(id=>this.$(id)).forEach(id => this.$(id).addEventListener('input', () => { this.page = 0; this.renderList(); }));
       this.$('person').onchange = () => { sessionStorage.setItem('ardepe-person', this.$('person').value); if (this.selected) this.renderWork(); };
       this.$('prev').onclick = () => { this.page = Math.max(0, this.page - 1); this.renderList(); };
       this.$('next').onclick = () => {
@@ -89,7 +89,7 @@
       this.refreshing = true; this.status('Actualizando…');
       try {
         const previousUnread=this.role==='driver'?this.cases.filter(c=>this.unread(c)).length:0;
-        const data = await this.service.bootstrap(); this.people = data.personnel || []; this.rules = data.rules || []; this.cases = data.cases || []; this.events = data.events || [];
+        const data = await this.service.bootstrap(); this.people = data.personnel || []; this.rules = data.rules || []; this.cases = data.cases || []; this.events = data.events || []; this.updateRuleFilter(true);
         const unreadNow=this.role==='driver'?this.cases.filter(c=>this.unread(c)).length:0;
         if(this.role==='driver'&&unreadNow>previousUnread&&previousUnread>=0){const latest=this.cases.map(c=>c.lastCentralMessageAt||'').sort().pop();this.service.notify('Central ARDEPE',unreadNow===1?'Tiene una solicitud nueva de Monitoreo':'Tiene '+unreadNow+' solicitudes nuevas de Monitoreo',latest);}
         this.$('identity').textContent = this.role === 'driver' ? data.actor.name : 'Hora operativa · Lima';
@@ -120,8 +120,19 @@
       const keys = new Set(this.cases.flatMap(c => c.eventKeys));
       return [...this.cases, ...this.events.filter(e => !keys.has(e.eventKey))];
     }
+    updateRuleFilter(refreshOptions=false) {
+      const select=this.$('rule');
+      if(!select)return;
+      if(refreshOptions){
+        const previous=select.value;
+        select.innerHTML='<option value="ALL">Todas las alertas Geotab</option>'+(this.rules||[]).filter(rule=>rule.active&&rule.show!==false).map(rule=>'<option value="'+esc(rule.id)+'">'+esc(rule.name)+'</option>').join('');
+        if([...select.options].some(option=>option.value===previous))select.value=previous;
+      }
+      select.hidden=this.origin!=='GEOTAB';
+      if(select.hidden)select.value='ALL';
+    }
     filtered() {
-      const state = this.$('state').value, priority = this.$('priority').value, query = this.$('search').value.toLocaleLowerCase(), today = D.limaDay(new Date());
+      const rule = this.$('rule') ? this.$('rule').value : 'ALL', state = this.$('state').value, priority = this.$('priority').value, query = this.$('search').value.toLocaleLowerCase(), today = D.limaDay(new Date());
       return this.all().filter(c => {
         if (this.role === 'driver' && c.driverId !== this.service.actor.id) return false;
         if (this.origin === 'DONE' && c.status !== 'FINALIZADA') return false;
@@ -131,6 +142,7 @@
         if (state === 'OLD' && (c.status === 'FINALIZADA' || D.limaDay(c.occurredAt) >= today)) return false;
         if (!['ALL','OLD'].includes(state) && c.status !== state) return false;
         if (priority !== 'ALL' && c.priority !== priority) return false;
+        if (rule !== 'ALL' && ![c.ruleId,c.rule&&c.rule.id,...(c.events||[]).map(event=>event.ruleId)].includes(rule)) return false;
         return !query || [c.title,c.plate,c.driverName,c.location].join(' ').toLocaleLowerCase().includes(query);
       }).sort((a,b) => D.PRIORITIES.indexOf(a.priority) - D.PRIORITIES.indexOf(b.priority) || a.occurredAt.localeCompare(b.occurredAt));
     }
