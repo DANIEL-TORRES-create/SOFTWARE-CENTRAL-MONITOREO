@@ -182,8 +182,15 @@
         this.selected = fresh; this.renderContext(); this.renderWork(true);
         if (this.unread(fresh)) { await this.command('read', {}, fresh); }
       } else if (this.service.resolve) {
+        this.resolving = item.id; this.renderWork();
         this.$('context').insertAdjacentHTML('afterbegin','<div class="info"><span class="spinner"></span>Consultando conductor, ubicación y valor…</div>');
-        const fresh = await this.service.resolve(item); if (!this.selected || this.selected.id !== item.id) return; this.selected = fresh; this.renderContext(); this.renderWork(true);
+        const release = () => { if (this.resolving === item.id) { this.resolving = null; if (this.selected && this.selected.id === item.id) this.renderWork(); } };
+        const timer = setTimeout(release, 20000);
+        try {
+          const fresh = await this.service.resolve(item); clearTimeout(timer);
+          if (this.resolving === item.id) this.resolving = null;
+          if (!this.selected || this.selected.id !== item.id) return; this.selected = fresh; this.renderContext(); this.renderWork(true);
+        } catch (error) { clearTimeout(timer); release(); throw error; }
       }
     }
     contextHTML(c, compact) {
@@ -212,7 +219,7 @@
       const workflow=this.role==='central'?'<nav class="workflow-strip" aria-label="Etapas de atención"><span>1. Validar</span><span>2. Comunicar</span><span>3. Evaluar</span><span>4. Actuar</span><span>5. Finalizar</span></nav>':'';
       this.$('manager').textContent = c.operator ? c.operator.name : '';
       this.$('work').innerHTML = (this.role === 'driver' ? '<div class="mobile-case-nav"><button id="a-mobile-back">‹ Volver a mis atenciones</button></div>' : '') + workflow + '<div class="detail-inline">' + this.contextHTML(c,true) + '</div><div class="content">' +
-        (this.role === 'central' ? '<div class="context-actions">' + (!c.version || !c.operator ? '<button id="a-take" class="primary">Iniciar atención</button>' : '') + (c.version && !closed ? '<button id="a-change-driver">Cambiar conductor</button>' : '') + (c.version && !closed && mine ? '<button id="a-associate">Asociar eventos</button>' : '') + (c.version ? '<button id="a-export">Exportar PDF</button>' : '') + '</div>' : '') +
+        (this.role === 'central' ? '<div class="context-actions">' + (!c.version || !c.operator ? '<button id="a-take" class="primary"' + (this.resolving === c.id && !c.version ? ' disabled' : '') + '>Iniciar atención</button>' : '') + (c.version && !closed ? '<button id="a-change-driver">Cambiar conductor</button>' : '') + (c.version && !closed && mine ? '<button id="a-associate">Asociar eventos</button>' : '') + (c.version ? '<button id="a-export">Exportar PDF</button>' : '') + '</div>' : '') +
         (!c.version ? '<div class="info">El evento todavía no se guarda en el Servidor. Inicie la atención para registrar el caso.</div>' : '') +
         '<p class="section-label">Conversación y evidencias</p><div id="a-messages">' + this.messagesHTML(c) + '</div>' +
         (c.version && !closed ? '<form id="a-message-form" class="form-stack"><fieldset ' + (!mine || !sendAllowed ? 'disabled' : '') + ' class="form-stack"><label>' + (this.role === 'driver' ? 'Mi respuesta o información adicional' : 'Mensaje al conductor') + '<textarea name="text" required maxlength="6000" placeholder="Escriba información clara sobre este caso."></textarea></label><label>Adjuntar imagen, PDF o documento<input name="files" type="file" multiple accept="image/jpeg,image/png,image/webp,.pdf,.txt,.docx,.xlsx"><small>Hasta 3 archivos · 3 MB cada uno después de optimizar imágenes · sin video</small></label>' + (this.role === 'central' ? '<label class="check"><input type="checkbox" name="requiresResponse" checked>Solicitar respuesta del conductor</label><label class="check"><input type="checkbox" name="clarification">Es una solicitud de aclaración</label>' : '') + '<button class="primary" type="submit">Enviar mensaje</button></fieldset></form>' : closed ? '<div class="info">Atención finalizada. La conversación y las evidencias se conservan para consulta.</div>' : '') +
@@ -385,4 +392,3 @@
   }
   window.ArdepeUI=ArdepeUI;
 })();
-
