@@ -2,16 +2,17 @@
 (function(root){
   'use strict';
   const D=root.ArdepeDomain;
-  async function generate(cases,evidence,now=new Date().toISOString()) {
+  async function generate(cases,evidence,now=new Date().toISOString(),logoBytes) {
     const {PDFDocument,StandardFonts,rgb,PDFName,PDFString}=root.PDFLib;
     const pdf=await PDFDocument.create(),font=await pdf.embedFont(StandardFonts.Helvetica),bold=await pdf.embedFont(StandardFonts.HelveticaBold);
     pdf.setTitle('ARDEPE - Informe de atenciones');pdf.setAuthor('Central Integral de Monitoreo ARDEPE');pdf.setCreationDate(new Date(now));
+    const logo=logoBytes?await pdf.embedPng(logoBytes):null;
     const width=595.28,height=841.89,margin=44,available=width-margin*2;
     let page,y;
     const format=value=>value?new Date(value).toLocaleString('es-PE',{timeZone:'America/Lima'}):'No registrado';
     // Standard PDF fonts support Spanish/WinAnsi. Unsupported symbols receive a visible replacement.
     const clean=value=>Array.from(String(value??'').normalize('NFC')).map(c=>{if(c==='\n')return c;try{font.encodeText(c);return c;}catch{return '?';}}).join('');
-    function newPage(){page=pdf.addPage([width,height]);y=height-48;page.drawText('ARDEPE  /  CENTRAL INTEGRAL DE MONITOREO',{x:margin,y,font:bold,size:10,color:rgb(.65,.18,.15)});y-=26;}
+    function newPage(){page=pdf.addPage([width,height]);y=height-42;if(logo){const scale=Math.min(108/logo.width,42/logo.height);page.drawImage(logo,{x:margin,y:y-logo.height*scale+5,width:logo.width*scale,height:logo.height*scale});}page.drawText('ARDEPE S.A.C.',{x:logo?margin+122:margin,y,font:bold,size:11,color:rgb(.65,.18,.15)});page.drawText('Informe de atenciones · Central Integral de Monitoreo',{x:logo?margin+122:margin,y:y-15,font,size:9,color:rgb(.25,.31,.36)});page.drawText('Generado: '+format(now),{x:logo?margin+122:margin,y:y-29,font,size:8,color:rgb(.4,.4,.4)});y-=58;page.drawLine({start:{x:margin,y},end:{x:width-margin,y},thickness:1,color:rgb(.65,.18,.15)});y-=18;}
     function space(amount){if(!page||y-amount<48)newPage();}
     function text(value,{size=10,strong=false,color=rgb(.15,.19,.23),gap=5,link}={}){
       const f=strong?bold:font,lines=[];
@@ -34,7 +35,7 @@
       text('Atención '+(index+1)+' de '+cases.length+' - Exportado: '+format(now),{size:9});
       text(c.title,{size:17,strong:true});
       text(D.STATES[c.status]+' / '+(c.result||'Resultado pendiente'),{strong:true});
-      text('Origen: '+c.origin+' | Prioridad: '+c.priority);
+      text('Origen: '+({GEOTAB:'Alerta Geotab',CENTRAL:'Solicitud de Central',CONDUCTOR:'Reporte del conductor'}[c.origin]||c.origin)+' | Prioridad: '+c.priority);
       text('Vehículo: '+(c.plate||'Por confirmar')+' | Conductor: '+(c.driverName||'Por confirmar'));
       text('Evento: '+format(c.occurredAt)+' | Creación: '+format(c.createdAt));
       text('Inicio de atención: '+format(c.startedAt)+' | Finalización: '+format(c.finalizedAt));
@@ -51,7 +52,7 @@
       if((c.events||[]).length){heading('Eventos asociados');for(const e of c.events)text(e.title+' | '+format(e.occurredAt)+' | '+(e.measurement?e.measurement.text:'Valor no disponible'));}
       heading('Gestiones');
       if(!c.managements.length)text('Sin gestiones registradas.');
-      for(const m of c.managements){text(format(m.at)+' / '+m.person.name+' / '+m.person.area,{strong:true});for(const [label,key] of [['Resultado','result'],['Causa','cause'],['Canal','channel'],['Acción inmediata','immediateAction'],['Acción correctiva o preventiva','action'],['Detalle de acción','correctiveAction'],['Responsable','owner'],['Fecha compromiso','dueDate'],['Resumen','summary'],['Observación','notes']])if(m[key])text(label+': '+m[key]);}
+      for(const m of c.managements){text('Fecha y hora de gestión: '+format(m.at)+' / '+m.person.name+' / '+m.person.area,{strong:true});for(const [label,key] of [['Resultado','result'],['Causa','cause'],['Canal de atención','channel'],['Tipo de acción','action'],['Acción realizada','immediateAction'],['Detalle adicional de acción','correctiveAction'],['Responsable de seguimiento','owner'],['Fecha límite de seguimiento','dueDate'],['Resumen y observaciones','summary'],['Observación complementaria','notes'],['Estado registrado','status']])if(m[key])text(label+': '+(key==='channel'&&m[key]==='Drive'?'Geotab Drive':key==='status'?(D.STATES[m[key]]||m[key]):m[key]));if(m.status==='FINALIZADA')text('Fecha y hora de cierre: '+format(c.finalizedAt||m.at));}
       heading('Conversación y evidencias');
       if(!c.messages.length)text('Sin mensajes registrados.');
       for(const m of c.messages){space(55);text(m.author+' / '+(m.role==='central'?'Monitoreo':'Conductor')+' / '+format(m.at),{strong:true});text(m.text);if(m.requiresResponse)text('Solicita respuesta del conductor',{size:9});
