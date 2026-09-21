@@ -86,26 +86,28 @@
       if (!this.reconnecting) this.reconnecting = this.connect().finally(() => { this.reconnecting = null; });
       return this.reconnecting;
     }
-    async request(params, post = false, retried = false) {
+    async request(params, post = false, retried = false, onProgress) {
       const tokenAtStart=this.token;
-      try { return await this.rawRequest(params,post); }
+      try { return await this.rawRequest(params,post,onProgress); }
       catch(error) {
         if(!retried&&params.action!=='v2.login'&&this.sessionExpired(error)){
           if(this.token===tokenAtStart)await this.renewSession();
-          return this.request(params,post,true);
+          return this.request(params,post,true,onProgress);
         }
         throw error;
       }
     }
-    async rawRequest(params, post = false) {
+    async rawRequest(params, post = false, onProgress) {
       if (!window.ARDEPE_CONFIG.backendUrl) throw new Error('El backend definitivo aún no está configurado. Esta pantalla no ha enviado datos.');
       const url = new URL(window.ARDEPE_CONFIG.backendUrl);
       const values = { ...params, token: Object.hasOwn(params,'_token')?params._token:this.token, apiVersion: '2' };delete values._token;
       if (post) {
         try {
+        if(onProgress)onProgress('Enviando…');
         await fetch(url, { method: 'POST', mode: 'no-cors', body: new URLSearchParams(values), signal: AbortSignal.timeout(30000) });
-        for (let attempt = 0; attempt < 30; attempt++) {
-          await new Promise(resolve => setTimeout(resolve, 800));
+        if(onProgress)onProgress('Confirmando…');
+        for (let attempt = 0; attempt < 80; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, attempt<8?250:600));
           const status = params.action==='v2.login'
             ? await this.rawRequest({ action: 'v2.operation', operationId: params.operationId, receipt: params.receipt, _token:'' })
             : await this.request({ action: 'v2.operation', operationId: params.operationId, receipt: params.receipt });
@@ -161,13 +163,13 @@
       if(!pending)throw new Error('No hay envíos pendientes de confirmación en esta pestaña');
       return this.command(pending.command,pending.personId);
     }
-    async command(command, personId) {
+    async command(command, personId, onProgress) {
       const pending=await this.pendingCommand();
       if(pending && pending.command.operationId!==command.operationId){const error=new Error('Hay un envío sin confirmar. Pulse Reintentar envío pendiente antes de continuar.');error.uncertain=true;throw error;}
       // Persist before sending. If storage is full, no request is sent; evidence is never silently lost.
       await this.savePending({command,personId});
       try{
-        const result=await this.request({ action: 'v2.command', operationId: command.operationId, receipt: command.receipt, command: JSON.stringify(command), personId: personId || '' }, true);
+        const result=await this.request({ action: 'v2.command', operationId: command.operationId, receipt: command.receipt, command: JSON.stringify(command), personId: personId || '' }, true, false, onProgress);
         await this.clearPending();return result;
       }catch(error){if(!error.definitive)error.uncertain=true;if(!error.uncertain)await this.clearPending();throw error;}
     }
