@@ -230,6 +230,42 @@
         return events;
       } finally { this.running = false; }
     }
+    // Zonas del tipo configurado en window.ARDEPE_CONFIG.zoneTypeId (ver config.js). Se cargan una sola
+    // vez por sesión y se guardan en this.zoneList; si Geotab no las entrega, el caso sigue mostrando
+    // solo la dirección, sin errores. No se usan en el modo demostración (DemoService no llama a resolve()).
+    pointInPolygon(lat, lng, points) {
+      let inside = false;
+      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const xi = points[i].x, yi = points[i].y, xj = points[j].x, yj = points[j].y;
+        if ((yi > lat) !== (yj > lat) && lng < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside;
+      }
+      return inside;
+    }
+    async zones() {
+      if (this.zoneList) return this.zoneList;
+      if (this.zoneFailedAt && Date.now() - this.zoneFailedAt < 300000) return [];
+      if (!this.zoneLoading) {
+        this.zoneLoading = (async () => {
+          try {
+            const typeId = window.ARDEPE_CONFIG.zoneTypeId;
+            const rows = await this.geotabCall('Get', { typeName: 'Zone' });
+            this.zoneList = (Array.isArray(rows) ? rows : []).filter(z => z && z.name && Array.isArray(z.points) && z.points.length >= 3 && (z.zoneTypes || []).some(t => t.id === typeId)).map(z => {
+              let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+              for (const p of z.points) { if (p.y < minLat) minLat = p.y; if (p.y > maxLat) maxLat = p.y; if (p.x < minLng) minLng = p.x; if (p.x > maxLng) maxLng = p.x; }
+              return { name: z.name, points: z.points, minLat, maxLat, minLng, maxLng };
+            });
+            this.zoneFailedAt = 0;
+          } catch (_) { this.zoneFailedAt = Date.now(); }
+          finally { this.zoneLoading = null; }
+          return this.zoneList || [];
+        })();
+      }
+      return this.zoneLoading;
+    }
+    async zoneAt(lat, lng) {
+      const zone = (await this.zones()).find(z => lat >= z.minLat && lat <= z.maxLat && lng >= z.minLng && lng <= z.maxLng && this.pointInPolygon(lat, lng, z.points));
+      return zone ? zone.name : '';
+    }
     async resolve(event) {
       if (!event.rule) return event;
       const start = new Date(Date.parse(event.occurredAt) - 2000).toISOString(), end = new Date(Date.parse(event.activeTo || new Date().toISOString()) + 2000).toISOString();
@@ -258,12 +294,23 @@
         if (samples.length) peak = event.rule.kind === 'braking' ? Math.min(...samples) : event.rule.kind === 'acceleration' ? Math.max(...samples) : Math.max(...samples.map(Math.abs));
         event.measurement = D.measurement(event.rule.kind, peak, actualUnit);
       }
-      const point = logs.find(l => Number.isFinite(l.latitude) && Number.isFinite(l.longitude));
-      if (point) {
-        event.latitude = point.latitude; event.longitude = point.longitude;
-        const addressResponse = await this.geotabCall('GetAddresses', { coordinates: [{ x: point.longitude, y: point.latitude }] });
-        const addresses=Array.isArray(addressResponse)?addressResponse:[];
-        event.location = addresses[0] && addresses[0].formattedAddress || point.latitude + ', ' + point.longitude;
+      // Posición: primero la del propio evento (si Geotab ya la trae); si no, la del registro del vehículo.
+      let lat = Number(event.latitude), lng = Number(event.longitude);
+      if (!(Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0))) {
+        const point = logs.find(l => Number.isFinite(l.latitude) && Number.isFinite(l.longitude));
+        lat = point ? point.latitude : NaN; lng = point ? point.longitude : NaN;
+      }
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        event.latitude = lat; event.longitude = lng;
+        let address = lat + ', ' + lng;
+        try {
+          const addressResponse = await this.geotabCall('GetAddresses', { coordinates: [{ x: lng, y: lat }] });
+          const addresses=Array.isArray(addressResponse)?addressResponse:[];
+          address = addresses[0] && addresses[0].formattedAddress || address;
+        } catch (_) {}
+        let zone = '';
+        try { zone = await this.zoneAt(lat, lng); } catch (_) {}
+        event.location = zone ? 'Zona: ' + zone.toUpperCase() + ' · ' + address : address;
       }
       const changeResponse = await this.geotabCall('Get', { typeName: 'DriverChange', search: { deviceSearch: { id: event.deviceId }, fromDate: event.occurredAt, toDate: event.activeTo || new Date().toISOString(), includeOverlappedChanges: true } });
       const changes=Array.isArray(changeResponse)?changeResponse:[];
