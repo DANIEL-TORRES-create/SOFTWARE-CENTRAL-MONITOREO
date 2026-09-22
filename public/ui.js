@@ -68,6 +68,7 @@
       if (filters.type) parts.push('Tipo: ' + filters.type);
       if (filters.cause) parts.push('Causa: ' + filters.cause);
       if (filters.result) parts.push('Resultado: ' + filters.result);
+      if (filters.owner) parts.push('Responsable: ' + filters.owner);
       return parts.join(' · ');
     }
     renderSummaryDashboard() {
@@ -77,17 +78,19 @@
       const rules = this.rules || [];
       const t = R.totals(cases);
       const driverNames = [...new Map(data.cases.filter(c => c.driverId).map(c => [c.driverId, c.driverName || c.driverId])).entries()];
+      const ownerNames = [...new Set((this.people||[]).filter(p=>p.active).map(p=>p.name).concat(data.cases.map(c=>R.lastOwner(c)).filter(Boolean)))];
       const plates = [...new Set(data.cases.map(c => c.plate).filter(Boolean))].sort();
       const groupOptions = { type: ['Tipo', D.TYPES], cause: ['Causa', D.CAUSES], result: ['Resultado', D.RESULTS] };
       const groupField = this.summaryGroup || 'type';
       const groupRows = groupField === 'type' ? R.countBy(cases, 'type') : groupField === 'cause' ? R.countBy(cases, 'cause') : R.countBy(cases, 'result');
       const html =
         '<div class="filter-row" style="flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px">' +
-        '<label>Conductor<input id="a-sf-driver" list="a-sf-driver-list" placeholder="Todos" value="' + esc(data.filters.driverId ? (driverNames.find(d=>d[0]===data.filters.driverId)||[,''])[1] : '') + '"><datalist id="a-sf-driver-list">' + driverNames.map(d => '<option value="' + esc(d[1]) + '">').join('') + '</datalist></label>' +
-        '<label>Vehículo<input id="a-sf-plate" list="a-sf-plate-list" placeholder="Todos" value="' + esc(data.filters.plate || '') + '"><datalist id="a-sf-plate-list">' + plates.map(p => '<option value="' + esc(p) + '">').join('') + '</datalist></label>' +
-        '<label>Tipo<select id="a-sf-type"><option value="">Todos</option>' + D.TYPES.map(x => '<option' + (data.filters.type === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
-        '<label>Causa<select id="a-sf-cause"><option value="">Todas</option>' + D.CAUSES.map(x => '<option' + (data.filters.cause === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
-        '<label>Resultado<select id="a-sf-result"><option value="">Todos</option>' + D.RESULTS.map(x => '<option' + (data.filters.result === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
+        '<label style="width:160px">Conductor<input id="a-sf-driver" list="a-sf-driver-list" placeholder="Todos" value="' + esc(data.filters.driverId ? (driverNames.find(d=>d[0]===data.filters.driverId)||[,''])[1] : '') + '"><datalist id="a-sf-driver-list">' + driverNames.map(d => '<option value="' + esc(d[1]) + '">').join('') + '</datalist></label>' +
+        '<label style="width:140px">Vehículo<input id="a-sf-plate" list="a-sf-plate-list" placeholder="Todos" value="' + esc(data.filters.plate || '') + '"><datalist id="a-sf-plate-list">' + plates.map(p => '<option value="' + esc(p) + '">').join('') + '</datalist></label>' +
+        '<label style="width:140px">Tipo<select id="a-sf-type"><option value="">Todos</option>' + D.TYPES.map(x => '<option' + (data.filters.type === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
+        '<label style="width:140px">Causa<select id="a-sf-cause"><option value="">Todas</option>' + D.CAUSES.map(x => '<option' + (data.filters.cause === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
+        '<label style="width:160px">Resultado<select id="a-sf-result"><option value="">Todos</option>' + D.RESULTS.map(x => '<option' + (data.filters.result === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
+        '<label style="width:160px">Responsable<input id="a-sf-owner" list="a-sf-owner-list" placeholder="Todos" value="' + esc(data.filters.owner || '') + '"><datalist id="a-sf-owner-list">' + ownerNames.map(n => '<option value="' + esc(n) + '">').join('') + '</datalist></label>' +
         '<button id="a-sf-apply" class="primary">Aplicar</button><button id="a-sf-clear">Limpiar filtros</button>' +
         '</div>' +
         '<div class="export-row" style="display:flex;gap:10px;margin-bottom:14px">' +
@@ -95,11 +98,11 @@
         '<small class="muted" style="align-self:center">' + esc(data.periodLabel) + (this.summaryFilterLabel(data.filters) ? ' · ' + esc(this.summaryFilterLabel(data.filters)) : '') + '</small>' +
         '</div>' +
         '<div class="totals" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">' +
-        ['Total de casos,' + t.total, 'Finalizados,' + t.done + ' / ' + t.total, 'Activos,' + t.active, 'Prom. hasta iniciar,' + t.avgStart + ' min', 'Prom. hasta finalizar,' + t.avgClose + ' min'].map(pair => { const [l,v] = pair.split(','); return '<div class="metric"><small>' + l + '</small><strong>' + v + '</strong></div>'; }).join('') +
+        ['Total de casos,' + t.total, 'Finalizados,' + t.done + ' / ' + t.total, 'Activos,' + t.active, 'Prom. hasta iniciar,' + R.formatMinutes(t.avgStart), 'Prom. hasta finalizar,' + R.formatMinutes(t.avgClose)].map(pair => { const [l,v] = pair.split(','); return '<div class="metric"><small>' + l + '</small><strong>' + v + '</strong></div>'; }).join('') +
         '</div>' +
         '<div class="grid" style="display:flex;flex-wrap:wrap;gap:16px">' +
         this.summaryCard('sf-group', 'Casos por tipo, causa o resultado', '<select id="a-sf-group-sel">' + Object.entries(groupOptions).map(([k,v]) => '<option value="' + k + '"' + (groupField === k ? ' selected' : '') + '>Por ' + v[0].toLowerCase() + '</option>').join('') + '</select>', groupRows.length ? R.barChartSVG(groupRows) : '<p class="muted" style="padding:16px">Sin registros</p>') +
-        this.summaryCard('sf-priority', 'Tiempo promedio de cierre por prioridad (min)', '', (() => { const rows = R.avgCloseByPriority(cases).filter(r=>cases.some(c=>c.priority===r[0])); return rows.length ? R.barChartSVG(rows) : '<p class="muted" style="padding:16px">Sin registros</p>'; })()) +
+        this.summaryCard('sf-priority', 'Tiempo promedio de cierre por prioridad (HH:MM)', '', (() => { const rows = R.avgCloseByPriority(cases).filter(r=>cases.some(c=>c.priority===r[0])); return rows.length ? R.barChartSVG(rows, { labelFn: r => R.formatMinutes(r[1]) }) : '<p class="muted" style="padding:16px">Sin registros</p>'; })()) +
         this.summaryCard('sf-trend', 'Tendencia mensual · últimos 6 meses', '', (() => { const rows = this.summaryMonthlyRows(trendCases); return rows.length ? R.barChartSVG(rows) : '<p class="muted" style="padding:16px">Sin registros</p>'; })()) +
         this.summaryCard('sf-driver-table', 'Por conductor', '', R.tableHTML(R.countBy(cases, 'driverName'), ['Conductor','Casos'])) +
         this.summaryCard('sf-plate-table', 'Por vehículo', '', R.tableHTML(R.countBy(cases, 'plate'), ['Vehículo','Casos'])) +
@@ -108,11 +111,12 @@
       this.$('summary-content').innerHTML = html;
       const driverMap = new Map(driverNames.map(d => [d[1], d[0]]));
       this.$('sf-apply').onclick = () => {
-        const driverText = this.$('sf-driver').value.trim(), plateText = this.$('sf-plate').value.trim();
+        const driverText = this.$('sf-driver').value.trim(), plateText = this.$('sf-plate').value.trim(), ownerText = this.$('sf-owner').value.trim();
         data.filters = {
           driverId: driverText ? (driverMap.get(driverText) || '') : '',
           plate: plateText || '',
           type: this.$('sf-type').value || '', cause: this.$('sf-cause').value || '', result: this.$('sf-result').value || '',
+          owner: ownerText || '',
         };
         this.renderSummaryDashboard();
       };
@@ -141,8 +145,8 @@
       const bytes = await R.exportPDF({
         periodLabel: data.periodLabel, filterLabel: this.summaryFilterLabel(data.filters), totals: t,
         sections: [
-          { title: 'Por ' + groupField, rows: groupField === 'type' ? R.countBy(cases,'type') : groupField === 'cause' ? R.countBy(cases,'cause') : R.countBy(cases,'result') },
-          { title: 'Tiempo promedio de cierre por prioridad (min)', rows: R.avgCloseByPriority(cases).filter(r=>cases.some(c=>c.priority===r[0])) },
+          { title: 'Por ' + R.fieldLabel(groupField).toLowerCase(), rows: groupField === 'type' ? R.countBy(cases,'type') : groupField === 'cause' ? R.countBy(cases,'cause') : R.countBy(cases,'result') },
+          { title: 'Tiempo promedio de cierre por prioridad (HH:MM)', rows: R.avgCloseByPriority(cases).filter(r=>cases.some(c=>c.priority===r[0])).map(r=>[r[0], R.formatMinutes(r[1])]) },
           { title: 'Tendencia mensual (6 meses)', rows: this.summaryMonthlyRows(trendCases) },
           { title: 'Por conductor', rows: R.countBy(cases,'driverName') },
           { title: 'Por vehículo', rows: R.countBy(cases,'plate') },
@@ -160,8 +164,8 @@
       const groupField = this.summaryGroup || 'type';
       const bytes = await R.exportExcel([
         { name: 'Resumen', headers: ['Período','Filtros','Total','Finalizados','Activos'], rows: [[data.periodLabel, this.summaryFilterLabel(data.filters)||'Ninguno', cases.length, cases.filter(c=>c.status==='FINALIZADA').length, cases.filter(c=>c.status!=='FINALIZADA').length]] },
-        { name: 'Por ' + groupField, headers: [groupField==='type'?'Tipo':groupField==='cause'?'Causa':'Resultado','Casos'], rows: groupField==='type'?R.countBy(cases,'type'):groupField==='cause'?R.countBy(cases,'cause'):R.countBy(cases,'result') },
-        { name: 'Cierre por prioridad', headers: ['Prioridad','Minutos promedio'], rows: R.avgCloseByPriority(cases).filter(r=>cases.some(c=>c.priority===r[0])) },
+        { name: 'Por ' + R.fieldLabel(groupField).toLowerCase(), headers: [R.fieldLabel(groupField),'Casos'], rows: groupField==='type'?R.countBy(cases,'type'):groupField==='cause'?R.countBy(cases,'cause'):R.countBy(cases,'result') },
+        { name: 'Cierre por prioridad', headers: ['Prioridad','Tiempo promedio (HH:MM)'], rows: R.avgCloseByPriority(cases).filter(r=>cases.some(c=>c.priority===r[0])).map(r=>[r[0], R.formatMinutes(r[1])]) },
         { name: 'Tendencia 6 meses', headers: ['Mes','Casos'], rows: this.summaryMonthlyRows(trendCases) },
         { name: 'Por conductor', headers: ['Conductor','Casos'], rows: R.countBy(cases,'driverName') },
         { name: 'Por vehículo', headers: ['Vehículo','Casos'], rows: R.countBy(cases,'plate') },
@@ -215,7 +219,7 @@
       const tabs = (driver ? [['NEW','Nuevos'],['ACTIVE','En curso'],['DONE','Finalizados']] : [['GEOTAB','Alertas Geotab'],['CENTRAL','Solicitudes de Central'],['CONDUCTOR','Reportes del conductor']]).map(([id,label]) => '<button data-origin="' + id + '" class="' + (id === this.origin ? 'active' : '') + '">' + label + '<span class="tab-count" data-origin-count="'+id+'"></span></button>').join('');
       const filters = driver
         ? '<section class="filters driver-filters"><nav class="tabs" id="a-tabs" aria-label="Casos">' + tabs + '</nav><details class="filter-disclosure"><summary>Buscar y filtrar</summary><div class="filter-row"><select id="a-state" aria-label="Estado"><option value="ALL">Todos los estados activos</option><option value="OLD">Pendientes anteriores</option>' + Object.entries(D.STATES).map(([id,label]) => '<option value="' + id + '">' + label + '</option>').join('') + '</select><select id="a-priority" aria-label="Prioridad"><option value="ALL">Todas las prioridades</option>' + options(D.PRIORITIES) + '</select><input id="a-search" type="search" placeholder="Buscar vehículo o motivo" aria-label="Buscar casos"><button id="a-refresh">Actualizar</button></div></details></section>'
-        : '<section class="filters"><nav class="tabs" id="a-tabs" aria-label="Origen">' + tabs + '<button id="a-summary" style="margin-left:auto">Resumen</button></nav><div class="filter-row central-filter-row"><select id="a-rule" aria-label="Tipo de alerta"><option value="ALL">Todas las alertas Geotab</option></select><select id="a-state" aria-label="Estado"><option value="ALL">Todos los estados activos</option><option value="OLD">Pendientes anteriores</option>' + Object.entries(D.STATES).map(([id,label]) => '<option value="' + id + '">' + label + '</option>').join('') + '</select><select id="a-priority" aria-label="Prioridad"><option value="ALL">Todas las prioridades</option>' + options(D.PRIORITIES) + '</select><input id="a-search" type="search" placeholder="Buscar placa, conductor o motivo" aria-label="Buscar casos"><button id="a-refresh">Actualizar</button></div></section>';
+        : '<section class="filters"><nav class="tabs" id="a-tabs" aria-label="Origen">' + tabs + '<button id="a-summary" style="margin-left:auto">Resumen</button></nav><div class="filter-row central-filter-row"><select id="a-rule" aria-label="Tipo de alerta"><option value="ALL">Todas las alertas Geotab</option></select><select id="a-state" aria-label="Estado"><option value="ALL">Todos los estados activos</option><option value="OLD">Pendientes anteriores</option>' + Object.entries(D.STATES).map(([id,label]) => '<option value="' + id + '">' + label + '</option>').join('') + '</select><select id="a-priority" aria-label="Prioridad"><option value="ALL">Todas las prioridades</option>' + options(D.PRIORITIES) + '</select><input id="a-search" type="search" placeholder="Buscar placa, conductor o motivo" aria-label="Buscar casos"><input id="a-owner-filter" list="a-owner-filter-list" placeholder="Responsable de seguimiento" aria-label="Filtrar por responsable de seguimiento"><datalist id="a-owner-filter-list"></datalist><button id="a-refresh">Actualizar</button></div></section>';
       return '<div class="shell ' + (driver ? 'driver-shell' : '') + '">' +
         '<header class="topbar"><img class="logo" src="' + logo + '" alt="ARDEPE SAC"><div class="title"><h1>' + (driver ? 'Mis atenciones' : 'Central Integral de Monitoreo') + '</h1><p>ARDEPE · Seguridad vial</p></div>'+(driver?'<button id="a-drive-back" class="drive-back" aria-label="Volver al panel de Geotab Drive" title="Volver a Geotab Drive">←</button>':'')+'<div class="identity"><span id="a-connection" class="connection">Preparando conexión</span><div id="a-identity" class="muted"></div></div></header>' +
         (this.demo ? '<div class="demo-banner"><strong>DEMOSTRACIÓN LOCAL</strong><span>Datos simulados. No envía información real.</span><a target="_blank" href="' + (driver ? 'centralArdepe' : 'conductorArdepe') + '.html?demo=1">Abrir ' + (driver ? 'Central' : 'vista del conductor') + '</a></div>' : '') +
@@ -230,7 +234,7 @@
     bind() {
       this.$('refresh').onclick = () => this.run(this.$('refresh'), () => this.refresh());
       this.$('tabs').onclick = event => { const button = event.target.closest('[data-origin]'); if (!button || button.dataset.origin===this.origin) return; if(!this.clearSelection())return; this.origin = button.dataset.origin; this.page = 0; this.$('tabs').querySelectorAll('button').forEach(b => b.classList.toggle('active', b === button)); this.updateRuleFilter(); this.renderList(); };
-      ['rule','state','priority','search'].filter(id=>this.$(id)).forEach(id => this.$(id).addEventListener('input', () => { this.page = 0; this.renderList(); }));
+      ['rule','state','priority','search','owner-filter'].filter(id=>this.$(id)).forEach(id => this.$(id).addEventListener('input', () => { this.page = 0; this.renderList(); }));
       this.$('person').onchange = () => { sessionStorage.setItem('ardepe-person', this.$('person').value); if (this.selected) this.renderWork(); };
       this.$('prev').onclick = () => { this.page = Math.max(0, this.page - 1); this.renderList(); };
       this.$('next').onclick = () => {
@@ -300,6 +304,7 @@
         this.$('identity').textContent = this.role === 'driver' ? data.actor.name : 'Hora operativa · Lima';
         const old = this.$('person').value || sessionStorage.getItem('ardepe-person');
         this.$('person').innerHTML = '<option value="">Seleccione personal</option>' + this.people.filter(p => p.active).map(p => '<option value="' + esc(p.id) + '">' + esc(p.name + ' · ' + p.area) + '</option>').join('');
+        if (this.$('owner-filter-list')) this.$('owner-filter-list').innerHTML = this.people.filter(p => p.active).map(p => '<option value="' + esc(p.name) + '">').join('');
         if (this.people.some(p => p.active && p.id === old)) this.$('person').value = old;
         if (this.demo && !this.$('person').value) this.$('person').value = 'demo-operator';
         this.renderList(); this.metrics(); this.renderLimits();
@@ -337,7 +342,7 @@
       if(select.hidden)select.value='ALL';
     }
     filtered() {
-      const rule = this.$('rule') ? this.$('rule').value : 'ALL', state = this.$('state').value, priority = this.$('priority').value, query = this.$('search').value.toLocaleLowerCase(), today = D.limaDay(new Date());
+      const rule = this.$('rule') ? this.$('rule').value : 'ALL', state = this.$('state').value, priority = this.$('priority').value, query = this.$('search').value.toLocaleLowerCase(), ownerQuery = this.$('owner-filter') ? this.$('owner-filter').value.trim().toLocaleLowerCase() : '', today = D.limaDay(new Date());
       return this.all().filter(c => {
         if (this.role === 'driver' && c.driverId !== this.service.actor.id) return false;
         if (this.role === 'driver') { if (this.origin !== 'ALL' && this.driverBucket(c) !== this.origin) return false; }
@@ -351,6 +356,7 @@
         if (!['ALL','OLD'].includes(state) && c.status !== state) return false;
         if (priority !== 'ALL' && c.priority !== priority) return false;
         if (rule !== 'ALL' && ![c.ruleId,c.rule&&c.rule.id,...(c.events||[]).map(event=>event.ruleId)].includes(rule)) return false;
+        if (ownerQuery && !(this.lastOwner(c) || '').toLocaleLowerCase().includes(ownerQuery)) return false;
         return !query || [c.title,c.plate,c.driverName,c.location].join(' ').toLocaleLowerCase().includes(query);
       }).sort((a,b) => D.PRIORITIES.indexOf(a.priority) - D.PRIORITIES.indexOf(b.priority) || a.occurredAt.localeCompare(b.occurredAt));
     }
@@ -359,6 +365,21 @@
     // propio del conductor nunca pasa por aquí). En curso = ya se abrió una vez, o lo reportó el
     // conductor mismo; una vez aquí, no vuelve a Nuevos aunque llegue otro mensaje. Finalizados = cerrado.
     driverBucket(c) { if (c.status === 'FINALIZADA') return 'DONE'; if (c.origin !== 'CONDUCTOR' && !c.readByDriverAt) return 'NEW'; return 'ACTIVE'; }
+    // El responsable "vigente" de un caso es el de su gestión más reciente, la misma que ya se usa
+    // para prellenar y heredar datos en "Actualizar seguimiento".
+    lastOwner(c) { return (c.managements && c.managements.length) ? c.managements[c.managements.length - 1].owner || '' : ''; }
+    // Para el conductor: si el último mensaje de Central no pedía respuesta y el conductor todavía
+    // no contestó nada después de ese mensaje, se le ofrece solo confirmar que lo recibió, en vez
+    // de un cuadro de texto. Aplica igual al primer mensaje de un caso creado por Central o desde
+    // un evento Geotab, ya que ese mensaje inicial también pasa por aquí como "último de Central".
+    needsOnlyConfirmation(c) {
+      if (this.role !== 'driver') return false;
+      const centralMsgs = (c.messages || []).filter(m => m.role === 'central');
+      if (!centralMsgs.length) return false;
+      const last = centralMsgs[centralMsgs.length - 1];
+      if (last.requiresResponse) return false;
+      return !(c.messages || []).some(m => m.role === 'driver' && m.at > last.at);
+    }
     // Busca la regla asociada a un caso o evento (por el primer evento, o por ruleId directo para
     // casos antiguos), para usar su nombre de dato personalizado si tiene uno ("Ralentí", etc.)
     // en vez del genérico "Valor detectado". Si no encuentra la regla, usa el genérico de siempre.
@@ -379,7 +400,12 @@
       this.$('count').textContent = rows.length + ' casos'; this.$('page').textContent = (this.page + 1) + ' / ' + pages;
       this.$('prev').disabled = this.page === 0; this.$('next').disabled = this.page >= pages - 1 && !(this.mode==='cases'&&this.historyNextToken);
       this.$('page').parentElement.hidden=pages<=1&&!(this.mode==='cases'&&this.historyNextToken);
-      const all=this.all(),active=c=>this.mode!=='live'||c.status!=='FINALIZADA';this.$('tabs').querySelectorAll('[data-origin-count]').forEach(node=>{const id=node.dataset.originCount;let count;if(this.role==='driver')count=all.filter(c=>this.driverBucket(c)===id).length;else count=all.filter(c=>c.origin===id&&active(c)).length;node.textContent=String(count);node.classList.toggle('attention',this.role==='driver'&&id==='NEW'&&count>0||this.role==='central'&&id==='CONDUCTOR'&&all.some(c=>c.origin==='CONDUCTOR'&&this.unread(c)));});
+      const all=this.all(),active=c=>this.mode!=='live'||c.status!=='FINALIZADA';this.$('tabs').querySelectorAll('[data-origin-count]').forEach(node=>{const id=node.dataset.originCount;let count;if(this.role==='driver')count=all.filter(c=>this.driverBucket(c)===id).length;else count=all.filter(c=>c.origin===id&&active(c)).length;node.textContent=String(count);
+        // Se resalta cada pestaña cuando tiene algo nuevo sin leer: para el conductor, un mensaje de
+        // Central en un caso de esa pestaña; para Central, una respuesta del conductor en un caso de
+        // ese origen (Geotab, Central o Conductor), no solo en "Reportes del conductor" como antes.
+        const hasUnread = this.role==='driver' ? all.some(c=>this.driverBucket(c)===id&&this.unread(c)) : all.some(c=>c.origin===id&&this.unread(c));
+        node.classList.toggle('attention',this.role==='driver'&&id==='NEW'&&count>0||hasUnread);});
       const ready = (this.people||[]).some(p=>p.active) && (this.rules||[]).some(r=>r.active);
       const empty = this.mode === 'live'
         ? (this.role === 'driver' ? '<div class="empty app-empty"><span class="empty-mark">✓</span><strong>Todo está al día</strong>No tienes solicitudes ni casos activos.<br>Usa <b>Reportar</b> si necesitas informar un incidente.</div>' : ready ? '<div class="empty app-empty"><span class="empty-mark">✓</span><strong>Sin casos en esta bandeja</strong>Revise las otras bandejas o use <b>Crear caso</b>.</div>' : '<div class="empty setup-empty"><strong>Complete la configuración inicial</strong><ol><li>Abra Administración.</li><li>Registre el personal de Monitoreo.</li><li>Registre y active las reglas Geotab.</li><li>Seleccione el personal activo y actualice la bandeja.</li></ol><span>Esta implementación inicia sin registros anteriores.</span></div>')
@@ -467,8 +493,11 @@
         (this.role === 'central' ? '<div class="context-actions">' + (!c.version || !c.operator ? '<button id="a-take" class="primary"' + (this.resolving === c.id && !c.version ? ' disabled' : '') + '>Iniciar atención</button>' : '') + (c.version && !closed ? '<button id="a-change-driver">Cambiar conductor</button>' : '') + (c.version && !closed && mine ? '<button id="a-associate">Asociar eventos</button>' : '') + (c.version ? '<button id="a-export">Exportar PDF</button>' : '') + '</div>' : '') +
         (!c.version ? '<div class="info">El evento todavía no se guarda en el Servidor. Inicie la atención para registrar el caso.</div>' : '') +
         '<p class="section-label">Conversación y evidencias</p><div id="a-messages">' + this.messagesHTML(c) + '</div>' +
-        (c.version && !closed ? '<form id="a-message-form" class="form-stack"><fieldset ' + (!mine || !sendAllowed ? 'disabled' : '') + ' class="form-stack"><label>' + (this.role === 'driver' ? 'Mi respuesta o información adicional' : 'Mensaje al conductor') + '<textarea name="text" required maxlength="6000" placeholder="Escriba información clara sobre este caso."></textarea></label><label>Adjuntar imagen, PDF o documento<input name="files" type="file" multiple accept="image/jpeg,image/png,image/webp,.pdf,.txt,.docx,.xlsx"><small>Hasta 3 archivos · 3 MB cada uno después de optimizar imágenes · sin video</small></label>' + (this.role === 'central' ? '<label class="check"><input type="checkbox" name="requiresResponse" checked>Solicitar respuesta del conductor</label><label class="check"><input type="checkbox" name="clarification">Es una solicitud de aclaración</label>' : '') + '<button class="primary" type="submit">Enviar mensaje</button></fieldset></form>' : closed ? '<div class="info">Atención finalizada. La conversación y las evidencias se conservan para consulta.</div>' : '') +
-        (this.role === 'central' && c.version && !closed ? this.managementHTML(mine) : '') +
+        (c.version && !closed ? (this.role === 'driver' && this.needsOnlyConfirmation(c)
+          ? '<form id="a-confirm-form" class="form-stack"><p class="muted">Monitoreo le envió información. No hace falta responder, solo confirme que la recibió.</p><button class="primary" type="submit">Confirmar recepción</button></form>'
+          : '<form id="a-message-form" class="form-stack"><fieldset ' + (!mine || !sendAllowed ? 'disabled' : '') + ' class="form-stack"><label>' + (this.role === 'driver' ? 'Mi respuesta o información adicional' : 'Mensaje al conductor') + '<textarea name="text" required maxlength="6000" placeholder="Escriba información clara sobre este caso."></textarea></label><label>Adjuntar imagen, PDF o documento<input name="files" type="file" multiple accept="image/jpeg,image/png,image/webp,.pdf,.txt,.docx,.xlsx"><small>Hasta 3 archivos · 3 MB cada uno después de optimizar imágenes · sin video</small></label>' + (this.role === 'central' ? '<label class="check"><input type="checkbox" name="requiresResponse" checked>Solicitar respuesta del conductor</label><label class="check"><input type="checkbox" name="clarification">Es una solicitud de aclaración</label>' : '') + '<button class="primary" type="submit">Enviar mensaje</button></fieldset></form>'
+        ) : closed ? '<div class="info">Atención finalizada. La conversación y las evidencias se conservan para consulta.</div>' : '') +
+        (this.role === 'central' && c.version && !closed ? this.managementHTML(mine, c) : '') +
         (c.managements && c.managements.length ? '<p class="section-label">Gestiones registradas</p>' + c.managements.map(m => this.managementRecordHTML(m,c)).join('') : '') + '</div>';
       if (preserve) this.$('work').querySelectorAll('input:not([type=file]),textarea,select').forEach(el => { if (Object.hasOwn(saved,el.name)) { if (el.type === 'checkbox') el.checked = saved[el.name]; else el.value = saved[el.name]; } });
       if (fileInput && this.$('work').querySelector('input[type=file]')) this.$('work').querySelector('input[type=file]').replaceWith(fileInput);
@@ -478,10 +507,30 @@
       if (this.$('change-driver')) this.$('change-driver').onclick = () => this.driverDialog();
       if (this.$('export')) this.$('export').onclick = () => this.run(this.$('export'), stage => this.exportCases([c], stage));
       if (this.$('message-form')) this.$('message-form').onsubmit = event => { event.preventDefault(); const form = event.currentTarget; this.run(event.submitter, async stage => {stage('Preparando…');const data = new FormData(form), attachments = await this.prepareFiles(form.elements.files.files);await this.command('message',{ text:data.get('text'), requiresResponse:data.has('requiresResponse'), clarification:data.has('clarification'), attachments },this.selected,stage);if(this.role==='central')this.closeCentralCase();else this.renderWork();this.toast('Mensaje enviado al Servidor');}); };
+      if (this.$('confirm-form')) this.$('confirm-form').onsubmit = event => { event.preventDefault(); this.run(event.submitter, async stage => {stage('Enviando…');await this.command('message',{ text:'Mensaje recibido', requiresResponse:false, confirmationOnly:true },this.selected,stage);this.renderWork();this.toast('Recepción confirmada');}); };
+      // Formulario completo: si el resultado elegido es "Falsa alerta" o "Solo informativo", se
+      // ocultan Canal, Causa, Tipo de acción, Acción realizada y Resumen (no son obligatorios ahí).
+      if (this.$('manage-result')) {
+        const toggleInformative = () => {
+          const informative = ['Falsa alerta', 'Solo informativo'].includes(this.$('manage-result').value);
+          this.$('manage-channel-field').hidden = informative;
+          this.$('manage-detail-fields').hidden = informative;
+          this.$('manage-summary-field').hidden = informative;
+        };
+        this.$('manage-result').onchange = toggleInformative; toggleInformative();
+      }
       if (this.$('manage-form')) this.$('manage-form').onsubmit = event => { event.preventDefault(); const payload = Object.fromEntries(new FormData(event.currentTarget)); this.run(event.submitter, async stage => {stage('Guardando…');await this.command('manage',payload,this.selected,stage);this.renderWork();this.toast(payload.status==='FINALIZADA'?'Gestión finalizada':'Gestión registrada');}); };
+      // Actualizar seguimiento: hereda resultado, causa, canal, acción y responsable de la última
+      // gestión ya registrada; solo pide la novedad de esta vez y, si corresponde, el estado y la fecha.
+      if (this.$('followup-form')) this.$('followup-form').onsubmit = event => { event.preventDefault(); const fd = new FormData(event.currentTarget), note = String(fd.get('note')||'').trim(), last = c.managements[c.managements.length-1]; const payload = { result:last.result, cause:last.cause, channel:last.channel, action:last.action, owner:last.owner, immediateAction:note, summary:note, status:fd.get('status'), dueDate:fd.get('dueDate') }; this.run(event.submitter, async stage => {stage('Guardando…');await this.command('manage',payload,this.selected,stage);this.renderWork();this.toast(payload.status==='FINALIZADA'?'Gestión finalizada':'Seguimiento registrado');}); };
+      if (this.$('manage-mode-short') && this.$('manage-mode-full')) {
+        this.$('manage-mode-short').onclick = () => { this.$('manage-short-wrap').hidden=false; this.$('manage-full-wrap').hidden=true; this.$('manage-mode-short').classList.add('active'); this.$('manage-mode-full').classList.remove('active'); };
+        this.$('manage-mode-full').onclick = () => { this.$('manage-short-wrap').hidden=true; this.$('manage-full-wrap').hidden=false; this.$('manage-mode-full').classList.add('active'); this.$('manage-mode-short').classList.remove('active'); };
+      }
       this.$('work').querySelectorAll('[data-evidence]').forEach(button => button.onclick = () => this.run(button, () => this.showEvidence(c.attachments.find(a => a.id === button.dataset.evidence),button)));
       if(this.$('associate'))this.$('associate').onclick=()=>this.associateDialog();
       if(this.$('manage-status')){const toggle=()=>{const follow=D.FOLLOW_STATES.includes(this.$('manage-status').value);this.$('follow-date').hidden=!follow;this.$('manage-form').elements.owner.required=follow;this.$('manage-form').elements.dueDate.required=follow;};this.$('manage-status').onchange=toggle;toggle();}
+      if(this.$('followup-status')){const toggle=()=>{const follow=D.FOLLOW_STATES.includes(this.$('followup-status').value);this.$('followup-date').hidden=!follow;this.$('followup-form').elements.dueDate.required=follow;};this.$('followup-status').onchange=toggle;toggle();}
       if(!sendAllowed && c.version && !closed)this.$('messages').insertAdjacentHTML('afterend','<p class="info">La regla no permite enviar mensajes al conductor. Puede registrar la gestión interna.</p>');
       this.tick();
     }
@@ -491,14 +540,48 @@
     }
     messagesHTML(c) {
       if (!c.messages || !c.messages.length) return '<p class="muted" style="margin:12px 0">Todavía no hay mensajes en este caso.</p>';
-      return c.messages.map(m => {const read=m.role==='central'?c.readByDriverAt>=m.at:c.readByCentralAt>=m.at,status=read?(m.role==='central'?'Leído por el conductor':'Leído por Monitoreo'):'Enviado';return '<article class="message ' + m.role + '"><header><strong>' + esc(m.author) + '</strong><small>' + (m.role === 'central' ? 'Monitoreo' : 'Conductor') + '</small></header><p>' + esc(m.text) + '</p><small>' + date(m.at) + ' · '+status+(m.requiresResponse ? ' · Solicita respuesta' : '') + '</small>' + (c.attachments || []).filter(a => a.messageId === m.id).map(a => '<button class="attachment-name" data-evidence="' + esc(a.id) + '"><b>'+esc(a.name)+'</b><small>'+esc(a.mimeType||'Archivo')+' · '+bytes(a.size)+'</small></button>').join('') + '</article>';}).join('');
+      return c.messages.map(m => {const read=m.role==='central'?c.readByDriverAt>=m.at:c.readByCentralAt>=m.at,status=read?(m.role==='central'?'Leído por el conductor':'Leído por Monitoreo'):'Enviado';return '<article class="message ' + m.role + '"><header><strong>' + esc(m.author) + '</strong><small>' + (m.role === 'central' ? 'Monitoreo' : 'Conductor') + '</small></header><p>' + esc(m.text) + '</p><small>' + date(m.at) + ' · '+status+(m.requiresResponse ? ' · Solicita respuesta' : '')+(m.confirmationOnly ? ' · Solo confirmación' : '') + '</small>' + (c.attachments || []).filter(a => a.messageId === m.id).map(a => '<button class="attachment-name" data-evidence="' + esc(a.id) + '"><b>'+esc(a.name)+'</b><small>'+esc(a.mimeType||'Archivo')+' · '+bytes(a.size)+'</small></button>').join('') + '</article>';}).join('');
     }
     managementRecordHTML(m,c){
       const fields=[['Resultado',m.result],['Causa',m.cause],['Canal de atención',channelLabel(m.channel)],['Tipo de acción',m.action],['Acción realizada',m.immediateAction],['Detalle adicional de acción',m.correctiveAction],['Responsable de seguimiento',m.owner],['Fecha límite de seguimiento',m.dueDate],['Resumen y observaciones',m.summary],['Observación complementaria',m.notes],['Estado registrado',D.STATES[m.status]||m.status]];
       return '<article class="management-record"><header><strong>'+esc(m.person&&m.person.name||'Personal de Monitoreo')+'</strong><small>Fecha y hora de gestión: '+date(m.at)+'</small></header><dl>'+fields.filter(([,value])=>value).map(([label,value])=>'<div><dt>'+esc(label)+'</dt><dd>'+esc(value)+'</dd></div>').join('')+(m.status==='FINALIZADA'?'<div><dt>Fecha y hora de cierre</dt><dd>'+date(c.finalizedAt||m.at)+'</dd></div>':'')+'</dl></article>';
     }
-    managementHTML(enabled) {
-      return '<details class="section-box"><summary>Evaluación, acciones y finalización</summary><form id="a-manage-form" class="form-stack"><fieldset class="form-stack" ' + (!enabled ? 'disabled' : '') + '><div class="two"><label>Resultado<select name="result" required><option value="">Seleccionar</option>' + options(D.RESULTS) + '</select></label><label>Canal de atención<select name="channel">' + options(D.CHANNELS.filter(channel=>channel!=='Drive')) + '</select></label></div><label>Causa identificada<select name="cause">' + options(D.CAUSES,'No determinada') + '</select></label><label>Tipo de acción<select name="action">' + options(D.ACTIONS) + '</select></label><label>Acción realizada<textarea name="immediateAction" required placeholder="Indique en un solo campo qué se hizo."></textarea></label><label>Estado al guardar<select id="a-manage-status" name="status"><option value="EN_GESTION">Continuar en gestión</option>' + D.FOLLOW_STATES.map(s => '<option value="' + s + '">' + D.STATES[s] + '</option>').join('') + '<option value="FINALIZADA">Atención finalizada</option></select></label><label>Responsable de seguimiento<input name="owner" placeholder="Persona responsable del seguimiento"></label><label id="a-follow-date" hidden>Fecha límite de seguimiento<input name="dueDate" type="date"></label><label>Resumen y observaciones<textarea name="summary" required placeholder="Resuma la atención y agregue aquí cualquier observación necesaria."></textarea></label><button type="submit" class="primary">Registrar gestión</button></fieldset></form></details>';
+    // El formulario de gestión tiene dos caminos, según si el caso ya tiene una gestión anterior:
+    // - Sin gestión previa: solo el formulario completo, con el responsable de seguimiento prellenado
+    //   con la persona activa en ese momento ("¿Eres tú?").
+    // - Con gestión previa: por defecto "Actualizar seguimiento" (corto: qué se hizo y el estado),
+    //   heredando resultado/causa/canal/acción/responsable de la última gestión; "Gestión completa"
+    //   sigue disponible como pestaña aparte para cuando de verdad cambia algo de fondo, y en ese
+    //   caso el responsable se prellena con el de la última gestión, no con la persona activa.
+    // Además, si el resultado elegido es "Falsa alerta" o "Solo informativo", el formulario completo
+    // se simplifica: solo pide Resultado y Estado al guardar (validado también en domain.js).
+    managementHTML(enabled, c) {
+      const lastMgmt = (c.managements && c.managements.length) ? c.managements[c.managements.length - 1] : null;
+      const activePeople = (this.people || []).filter(p => p.active);
+      const currentPerson = activePeople.find(p => p.id === this.$('person').value);
+      const ownerList = '<datalist id="a-owner-list">' + activePeople.map(p => '<option value="' + esc(p.name) + '">').join('') + '</datalist>';
+      const fullOwnerDefault = lastMgmt ? (lastMgmt.owner || '') : (currentPerson ? currentPerson.name : '');
+      const fullOwnerHint = (!lastMgmt && currentPerson) ? '<small>¿Eres tú? Puede escribir otro nombre.</small>' : '';
+      const fullForm = '<form id="a-manage-form" class="form-stack"><fieldset class="form-stack" ' + (!enabled ? 'disabled' : '') + '>' +
+        '<div class="two"><label>Resultado<select id="a-manage-result" name="result" required><option value="">Seleccionar</option>' + options(D.RESULTS.filter(r => r !== 'Sin elementos para continuar')) + '</select></label>' +
+        '<label id="a-manage-channel-field">Canal de atención<select name="channel">' + options(D.CHANNELS.filter(channel => channel !== 'Drive')) + '</select></label></div>' +
+        '<div id="a-manage-detail-fields"><label>Causa identificada<select name="cause">' + options(D.CAUSES,'No determinada') + '</select></label>' +
+        '<label>Tipo de acción<select name="action">' + options(D.ACTIONS) + '</select></label>' +
+        '<label>Acción realizada<textarea name="immediateAction" placeholder="Indique en un solo campo qué se hizo."></textarea></label></div>' +
+        '<label>Estado al guardar<select id="a-manage-status" name="status"><option value="EN_GESTION">Continuar en gestión</option>' + D.FOLLOW_STATES.map(s => '<option value="' + s + '">' + D.STATES[s] + '</option>').join('') + '<option value="FINALIZADA">Atención finalizada</option></select></label>' +
+        '<label>Responsable de seguimiento<input name="owner" list="a-owner-list" value="' + esc(fullOwnerDefault) + '" placeholder="Escriba para buscar">' + fullOwnerHint + '</label>' + ownerList +
+        '<label id="a-follow-date" hidden>Fecha límite de seguimiento<input name="dueDate" type="date"></label>' +
+        '<div id="a-manage-summary-field"><label>Resumen y observaciones<textarea name="summary" placeholder="Resuma la atención y agregue aquí cualquier observación necesaria."></textarea></label></div>' +
+        '<button type="submit" class="primary">Registrar gestión</button></fieldset></form>';
+      if (!lastMgmt) return '<details class="section-box" open><summary>Evaluación, acciones y finalización</summary>' + fullForm + '</details>';
+      const shortForm = '<form id="a-followup-form" class="form-stack"><fieldset class="form-stack" ' + (!enabled ? 'disabled' : '') + '>' +
+        '<label>¿Qué hizo esta vez?<textarea name="note" required placeholder="Describa brevemente la novedad de este seguimiento."></textarea></label>' +
+        '<label>Estado al guardar<select id="a-followup-status" name="status"><option value="EN_GESTION">Continuar en gestión</option>' + D.FOLLOW_STATES.map(s => '<option value="' + s + '"' + (s === c.status ? ' selected' : '') + '>' + D.STATES[s] + '</option>').join('') + '<option value="FINALIZADA">Atención finalizada</option></select></label>' +
+        '<label id="a-followup-date" hidden>Fecha límite de seguimiento<input name="dueDate" type="date" value="' + esc(lastMgmt.dueDate || '') + '"></label>' +
+        '<button type="submit" class="primary">Registrar seguimiento</button></fieldset></form>';
+      return '<details class="section-box" open><summary>Evaluación, acciones y finalización</summary>' +
+        '<div class="tabs" style="margin-bottom:10px"><button type="button" id="a-manage-mode-short" class="active">Actualizar seguimiento</button><button type="button" id="a-manage-mode-full">Gestión completa</button></div>' +
+        '<div id="a-manage-short-wrap">' + shortForm + '</div><div id="a-manage-full-wrap" hidden>' + fullForm + '</div></details>';
     }
     tick() { if (!this.selected || !this.mounted) return; const c = this.selected, times = c.version ? D.times(c,new Date().toISOString()) : { total:D.seconds(c.occurredAt,new Date().toISOString()),toStart:D.seconds(c.occurredAt,new Date().toISOString()),waiting:0,followUp:0 }; document.querySelectorAll('[data-time]').forEach(el => el.textContent = D.elapsed(times[el.dataset.time])); }
     async command(type, payload, current = this.selected, onProgress) {
@@ -549,8 +632,16 @@
         const driverResponse = this.role === 'central' ? await this.service.drivers() : [], deviceResponse = await this.service.devices(), mobile=this.role==='driver'&&this.service.mobileContext?await this.service.mobileContext():{};
         const drivers=Array.isArray(driverResponse)?driverResponse:[],devices=Array.isArray(deviceResponse)?deviceResponse:[];
         const local = new Date(Date.now()-18000000).toISOString().slice(0,16);
-        this.dialog(this.role === 'driver' ? 'Reportar incidente' : 'Crear caso','<form id="a-create-form" class="form-stack"><div class="two"><label>Tipo<select name="type">' + options(D.TYPES) + '</select></label><label>Prioridad<select name="priority">' + options(D.PRIORITIES,'MEDIA') + '</select></label></div>' + (this.role === 'central' ? '<label>Conductor<select name="driverId" required><option value="">Seleccione conductor</option>' + drivers.map(d => '<option value="'+esc(d.id)+'">'+esc(d.name)+'</option>').join('') + '</select></label>' : '<div class="info">Conductor: '+esc(this.service.actor.name)+(mobile.plate?' · Vehículo: '+esc(mobile.plate):' · Vehículo no detectado')+(mobile.location?' · Ubicación detectada':' · Ubicación no disponible')+'</div>') + '<div class="two"><label>Vehículo<select name="deviceId"><option value="">No disponible</option>' + devices.map(d => '<option value="'+esc(d.id)+'" '+(d.id===mobile.deviceId?'selected':'')+'>'+esc(d.name)+'</option>').join('') + '</select></label><label>Fecha y hora · Lima<input name="occurredAt" type="datetime-local" value="'+local+'" required></label></div><label>Ubicación<input name="location" maxlength="500" value="'+esc(mobile.location||'')+'"></label><input type="hidden" name="latitude" value="'+esc(mobile.latitude??'')+'"><input type="hidden" name="longitude" value="'+esc(mobile.longitude??'')+'"><label>Descripción / motivo<textarea name="description" required maxlength="6000"></textarea></label><div class="two"><label>Daños<input name="damages" maxlength="500"></label><label>Personas afectadas<input name="affected" maxlength="500"></label></div><label>'+(this.role==='central'?'Mensaje inicial al conductor':'Comentario adicional')+'<textarea name="initialMessage" '+(this.role==='central'?'required':'')+' maxlength="6000"></textarea></label><label>Adjuntar evidencia<input name="files" type="file" multiple accept="image/jpeg,image/png,image/webp,.pdf,.txt,.docx,.xlsx"><small>Hasta 3 archivos · sin video</small></label>'+(this.role==='central'?'<label class="check"><input name="requiresResponse" type="checkbox" checked>Requiere respuesta del conductor</label>':'')+'<button class="primary">Crear caso y registrar información</button></form>');
-        this.$('create-form').onsubmit = event => { event.preventDefault(); const fd=new FormData(event.currentTarget),payload=Object.fromEntries(fd);delete payload.files;payload.initialMessage=String(payload.initialMessage||'').trim();payload.requiresResponse=fd.has('requiresResponse');payload.occurredAt = new Date(payload.occurredAt+'-05:00').toISOString(); payload.title = payload.type; payload.driverName = (drivers.find(d=>d.id===payload.driverId)||{}).name||''; payload.plate = (devices.find(d=>d.id===payload.deviceId)||{}).name||''; payload.caseId = this.createCaseId || (this.createCaseId=D.month(new Date())+'_'+S.uid()); this.run(event.submitter,async stage=>{stage('Preparando…');payload.attachments=await this.prepareFiles([...event.currentTarget.elements.files.files]);stage('Guardando…');await this.command('create',payload,null,stage);this.createCaseId=null;this.$('dialog').close();if(this.role==='central')this.closeCentralCase();else this.renderWork();this.toast('Caso e información inicial enviados al Servidor'); }); };
+        this.dialog(this.role === 'driver' ? 'Reportar incidente' : 'Crear caso','<form id="a-create-form" class="form-stack"><div class="two"><label>Tipo<select name="type">' + options(D.TYPES) + '</select></label><label>Prioridad<select name="priority">' + options(D.PRIORITIES,'MEDIA') + '</select></label></div>' + (this.role === 'central' ? '<label>Conductor<input name="driverSearch" list="a-create-driver-list" required placeholder="Escriba para buscar"><datalist id="a-create-driver-list">' + drivers.map(d => '<option value="'+esc(d.name)+'">').join('') + '</datalist></label>' : '<div class="info">Conductor: '+esc(this.service.actor.name)+(mobile.plate?' · Vehículo: '+esc(mobile.plate):' · Vehículo no detectado')+(mobile.location?' · Ubicación detectada':' · Ubicación no disponible')+'</div>') + '<div class="two"><label>Vehículo<select name="deviceId"><option value="">No disponible</option>' + devices.map(d => '<option value="'+esc(d.id)+'" '+(d.id===mobile.deviceId?'selected':'')+'>'+esc(d.name)+'</option>').join('') + '</select></label><label>Fecha y hora · Lima<input name="occurredAt" type="datetime-local" value="'+local+'" required></label></div><label>Ubicación<input name="location" maxlength="500" value="'+esc(mobile.location||'')+'"></label><input type="hidden" name="latitude" value="'+esc(mobile.latitude??'')+'"><input type="hidden" name="longitude" value="'+esc(mobile.longitude??'')+'"><label>Descripción / motivo<textarea name="description" required maxlength="6000"></textarea></label><div class="two"><label>Daños<input name="damages" maxlength="500"></label><label>Personas afectadas<input name="affected" maxlength="500"></label></div><label>'+(this.role==='central'?'Mensaje inicial al conductor':'Comentario adicional')+'<textarea name="initialMessage" '+(this.role==='central'?'required':'')+' maxlength="6000"></textarea></label><label>Adjuntar evidencia<input name="files" type="file" multiple accept="image/jpeg,image/png,image/webp,.pdf,.txt,.docx,.xlsx"><small>Hasta 3 archivos · sin video</small></label>'+(this.role==='central'?'<label class="check"><input name="requiresResponse" type="checkbox" checked>Requiere respuesta del conductor</label>':'')+'<button class="primary">Crear caso y registrar información</button></form>');
+        this.$('create-form').onsubmit = event => { event.preventDefault(); const fd=new FormData(event.currentTarget),payload=Object.fromEntries(fd);delete payload.files;
+          if (this.role === 'central') {
+            const driverMap = new Map(drivers.map(d => [d.name, d.id]));
+            const typed = String(payload.driverSearch || '').trim(); delete payload.driverSearch;
+            const driverId = driverMap.get(typed);
+            if (!driverId) return this.toast('Escriba el nombre exacto de un conductor registrado y elíjalo de la lista', true);
+            payload.driverId = driverId; payload.driverName = typed;
+          }
+          payload.initialMessage=String(payload.initialMessage||'').trim();payload.requiresResponse=fd.has('requiresResponse');payload.occurredAt = new Date(payload.occurredAt+'-05:00').toISOString(); payload.title = payload.type; payload.plate = (devices.find(d=>d.id===payload.deviceId)||{}).name||''; payload.caseId = this.createCaseId || (this.createCaseId=D.month(new Date())+'_'+S.uid()); this.run(event.submitter,async stage=>{stage('Preparando…');payload.attachments=await this.prepareFiles([...event.currentTarget.elements.files.files]);stage('Guardando…');await this.command('create',payload,null,stage);this.createCaseId=null;this.$('dialog').close();if(this.role==='central')this.closeCentralCase();else this.renderWork();this.toast('Caso e información inicial enviados al Servidor'); }); };
       } catch(error) { this.toast(error.message,true); }
     }
     historyDialog() {
@@ -562,7 +653,8 @@
         form.onsubmit=event=>{event.preventDefault();const value=Object.fromEntries(new FormData(form));this.run(event.submitter,async()=>{const from=new Date(value.from+'-05:00').toISOString(),to=new Date(value.to+'-05:00').toISOString();this.$('dialog').close();await this.loadSummaryData(from,to,date(from)+' — '+date(to));});};
         return;
       }
-      this.dialog('Consulta histórica','<form id="a-history-form" class="form-stack"><label>Consultar<select name="source"><option value="cases">Historial de atenciones</option>' + (this.role==='central'?'<option value="events">Eventos Geotab por gestionar</option>':'') + '</select></label><div class="presets"><button type="button" data-preset="today">Hoy</button><button type="button" data-preset="yesterday">Ayer</button><button type="button" data-preset="7days">Últimos 7 días</button></div><div class="two"><label>Desde · Lima<input name="from" type="datetime-local" step="1" required></label><label>Hasta · Lima<input name="to" type="datetime-local" step="1" required></label></div><label>Regla (obligatoria para eventos Geotab)<select name="rule"><option value="">Seleccionar regla</option>' + (this.rules||[]).map(r=>'<option value="'+esc(r.id)+'">'+esc(r.name)+'</option>').join('') + '</select></label><p class="muted">Geotab: máximo 7 días. Atenciones: hasta un año por consulta. Los pendientes antiguos siguen en la vista activa.</p><button class="primary">Consultar</button></form>');
+      const isCentral = this.role === 'central';
+      this.dialog('Consulta histórica','<form id="a-history-form" class="form-stack"><label>Consultar<select name="source"><option value="cases">Historial de atenciones</option>' + (isCentral?'<option value="events">Eventos Geotab por gestionar</option>':'') + '</select></label><div class="presets"><button type="button" data-preset="today">Hoy</button><button type="button" data-preset="yesterday">Ayer</button><button type="button" data-preset="7days">Últimos 7 días</button></div><div class="two"><label>Desde · Lima<input name="from" type="datetime-local" step="1" required></label><label>Hasta · Lima<input name="to" type="datetime-local" step="1" required></label></div>' + (isCentral ? '<label>Regla (obligatoria para eventos Geotab)<select name="rule"><option value="">Seleccionar regla</option>' + (this.rules||[]).map(r=>'<option value="'+esc(r.id)+'">'+esc(r.name)+'</option>').join('') + '</select></label>' : '') + '<p class="muted">' + (isCentral ? 'Geotab: máximo 7 días. Atenciones: hasta un año por consulta. Los pendientes antiguos siguen en la vista activa.' : 'Puede consultar hasta un año por vez. Los pendientes antiguos siguen en la vista activa.') + '</p><button class="primary">Consultar</button></form>');
       const form=this.$('history-form');
       const setPreset=key=>{ const range=D.preset(key); for(const [name,value] of Object.entries(range)) form.elements[name].value=new Date(Date.parse(value)-18000000).toISOString().slice(0,19); form.querySelectorAll('[data-preset]').forEach(b=>{b.classList.toggle('active',b.dataset.preset===key);b.setAttribute('aria-pressed',String(b.dataset.preset===key));}); };
       form.querySelectorAll('[data-preset]').forEach(b=>b.onclick=()=>setPreset(b.dataset.preset));setPreset('yesterday');
