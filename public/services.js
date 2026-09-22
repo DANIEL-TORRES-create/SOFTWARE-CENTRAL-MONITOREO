@@ -53,6 +53,9 @@
       return navigator.locks ? navigator.locks.request('ardepe-demo-write', write) : write();
     }
     async drivers() { return clone(this.read().config.drivers); }
+    // Marca liviana: en demo no hay ahorro real (todo es local), pero se implementa igual para que
+    // la interfaz use el mismo camino que en producción, sin distinguir el modo.
+    async marker() { const cases = Object.values(this.read().cases).filter(item => D.actorCanRead(this.actor, item)); return cases.reduce((m,c) => (c.updatedAt||'') > m ? c.updatedAt : m, ''); }
     async devices() { return [{ id: 'CDK-772', name: 'CDK-772' }, { id: 'BHV-918', name: 'BHV-918' }]; }
     async mobileContext() { return { deviceId:'CDK-772', plate:'CDK-772', location:'Ubicación simulada de Geotab Drive', latitude:-11.984, longitude:-77.126 }; }
     async history(from, to) { D.range(from, to, 366); return {cases:(await this.bootstrap()).cases.filter(c => c.occurredAt >= from && c.occurredAt <= to),nextPageToken:''}; }
@@ -102,18 +105,30 @@
       const url = new URL(window.ARDEPE_CONFIG.backendUrl);
       const values = { ...params, token: Object.hasOwn(params,'_token')?params._token:this.token, apiVersion: '2' };delete values._token;
       if (post) {
-        try {
-        if(onProgress)onProgress('Enviando…');
-        await fetch(url, { method: 'POST', mode: 'no-cors', body: new URLSearchParams(values), signal: AbortSignal.timeout(30000) });
+        // El envío usa 'no-cors': el navegador nunca puede leer si el servidor lo aceptó o no.
+        // Por eso el único modo confiable de saberlo es preguntar después ("Confirmando…"). Un fallo
+        // al enviar (conexión lenta, tiempo agotado) no significa que no haya llegado: se sigue
+        // igual a comprobarlo, en silencio, en vez de mostrar un error de una vez.
+        const send = async () => {
+          try { if(onProgress)onProgress('Enviando…'); await fetch(url, { method: 'POST', mode: 'no-cors', body: new URLSearchParams(values), signal: AbortSignal.timeout(30000) }); }
+          catch (_) { /* no es definitivo: se confirma preguntando, no por esta respuesta */ }
+        };
+        await send();
         if(onProgress)onProgress('Confirmando…');
-        for (let attempt = 0; attempt < 80; attempt++) {
+        let resent = false;
+        for (let attempt = 0; attempt < 155; attempt++) {
           await new Promise(resolve => setTimeout(resolve, attempt<8?250:600));
-          const status = params.action==='v2.login'
-            ? await this.rawRequest({ action: 'v2.operation', operationId: params.operationId, receipt: params.receipt, _token:'' })
-            : await this.request({ action: 'v2.operation', operationId: params.operationId, receipt: params.receipt });
-          if (!status.pending) { if (!status.success) throw new Error(status.message); return status.result; }
+          // Cerca de los 15 s, si aún no hay noticia, se reenvía una sola vez más, en silencio.
+          // Es seguro: el servidor reconoce el mismo número de operación y no lo procesa dos veces.
+          if (!resent && attempt===24) { resent = true; await send(); }
+          let status;
+          try {
+            status = params.action==='v2.login'
+              ? await this.rawRequest({ action: 'v2.operation', operationId: params.operationId, receipt: params.receipt, _token:'' })
+              : await this.request({ action: 'v2.operation', operationId: params.operationId, receipt: params.receipt });
+          } catch (error) { if (error.definitive) throw error; continue; }
+          if (!status.pending) { if (!status.success) { const error=new Error(status.message); error.definitive=true; throw error; } return status.result; }
         }
-        } catch(error) { if(!error.definitive) error.uncertain=true; throw error; }
         const error = new Error('El servidor aún no confirmó la operación. Reintente conservando los datos; se usará la misma operación.'); error.uncertain = true; throw error;
       }
       Object.entries(values).forEach(([key, value]) => url.searchParams.set(key, value));
@@ -193,6 +208,8 @@
       }catch(_){}
       return context;
     }
+    // Consulta liviana: solo pregunta al servidor su marca en memoria, sin leer ninguna hoja.
+    async marker() { return (await this.request({ action: 'v2.marker' })).marker || ''; }
     async drivers() {
       if (!this.driverList) {
         const users = await this.geotabCall('Get', { typeName: 'User' });
@@ -205,8 +222,10 @@
       if (this.running) throw new Error('Hay una consulta de Geotab en curso');
       D.range(from, to); this.running = true;
       try {
-        const cacheKey = from + to + (ruleId || 'all'), cached = this.eventCache.get(cacheKey);
-        if (cached && Date.now() - cached.at < 60000) return clone(cached.events);
+        // La clave redondea 'to' a bloques de 30 s: 'to' cambia en cada refresco (siempre es "ahora"),
+        // así que sin este redondeo la caché nunca acertaba y se consultaba Geotab en cada ciclo.
+        const cacheKey = from + Math.floor(Date.parse(to) / 30000) + (ruleId || 'all'), cached = this.eventCache.get(cacheKey);
+        if (cached && Date.now() - cached.at < 30000) return clone(cached.events);
         const devices = new Map((await this.devices()).map(d => [d.id, d]));
         const rules = (this.rules || []).filter(r => r.active && r.show !== false && r.geotabRuleId && (!ruleId || r.id === ruleId));
         const found = new Map();
