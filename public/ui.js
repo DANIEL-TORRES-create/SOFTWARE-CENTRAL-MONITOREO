@@ -605,7 +605,22 @@
       // conexión justo cuando más importa que el envío llegue rápido. Se retoma apenas termina.
       this.pause();
       try {
-        const result = await this.service.command(command,this.$('person').value,onProgress);
+        let result;
+        try { result = await this.service.command(command,this.$('person').value,onProgress); }
+        catch (error) {
+          // "El caso cambió" puede salir por una carrera normal, no por un conflicto real: por
+          // ejemplo, al abrir el caso se marca como leído en silencio, y si se actúa muy rápido
+          // después, esa marca todavía no había llegado a actualizar la versión local. En vez de
+          // pedirle a la persona que vuelva a hacer clic, se reintenta una sola vez, ya con los
+          // datos al día; si el conflicto persiste (alguien más lo está editando de verdad), recién
+          // ahí se avisa.
+          if (type !== 'create' && error.definitive && /El caso cambió/.test(error.message || '')) {
+            const fresh = await this.service.detail(id);
+            command = { type, payload, caseId:id, version:fresh.version, operationId:S.uid(), receipt:S.uid() };
+            this.pending.set(signature, command);
+            result = await this.service.command(command,this.$('person').value,onProgress);
+          } else throw error;
+        }
         this.noteActivity();
         this.pending.delete(signature); this.cases = this.cases.filter(c => c.id !== result.id).concat(result); this.selected = result;
         if (this.role === 'driver') document.querySelector('.driver-shell').classList.add('case-open');
