@@ -127,7 +127,7 @@
         let attempt = 0, warned = false, elapsed = 0, lastResend = 0;
         while (true) {
           if (bounded && elapsed >= 120000) { const error = new Error('Envío de fondo agotó su intento; se reintentará más adelante.'); error.uncertain = true; throw error; }
-          const delay = attempt < 8 ? 250 : 600;
+          const delay = attempt === 0 ? 100 : (attempt < 8 ? 250 : 600);
           await new Promise(resolve => setTimeout(resolve, delay));
           elapsed += delay;
           if (!warned && elapsed >= 20000) { warned = true; if (onProgress) onProgress('Esto está tardando más de lo normal, seguimos intentando…'); }
