@@ -9,7 +9,7 @@
   const channelLabel = value => value==='Drive'?'Geotab Drive':value;
   const bytes = value => Number(value)>=1000000?(Number(value)/1000000).toFixed(1)+' MB':Math.max(1,Math.ceil(Number(value||0)/1000))+' KB';
   class ArdepeUI {
-    constructor(role) { this.role = role; this.cases = []; this.events = []; this.page = 0; this.origin = role === 'central' ? 'GEOTAB' : 'NEW'; this.selected = null; this.mode = 'live'; this.pending = new Map(); this.lastMarker = ''; this.activeUntil = 0; this.lastFullRefresh = 0; this.summaryMode = false; }
+    constructor(role) { this.role = role; this.cases = []; this.events = []; this.page = 0; this.origin = role === 'central' ? 'GEOTAB' : 'NEW'; this.selected = null; this.mode = 'live'; this.pending = new Map(); this.lastMarker = ''; this.activeUntil = 0; this.lastFullRefresh = 0; this.summaryMode = false; this.busyCount = 0; }
     // "Modo activo": tras enviar algo o abrir un caso, consulta más seguido durante 2 minutos.
     noteActivity() { this.activeUntil = Date.now() + 120000; }
     // --- Resumen: estado propio, separado de la cola de casos normal ---
@@ -258,13 +258,17 @@
     // se ve que sigue trabajando, y nunca hace falta volver a hacer clic. Un rechazo real (que
     // necesita tu atención, como "El caso cambió") se avisa; uno incierto por conexión no avisa
     // nada, simplemente sigue reintentando por dentro hasta terminar.
+    // Mientras dura, "busyCount" evita que un refresco de fondo reconstruya la pantalla y
+    // reemplace el formulario deshabilitado por uno nuevo (lo que hacía que pareciera "liberado"
+    // aunque el envío original siguiera trabajando por detrás).
     async run(button, fn) {
       if (button.disabled) return;
       const html = button.innerHTML,stage=label=>{if(button.isConnected)button.innerHTML='<span class="spinner"></span>'+label;};
       button.disabled=true;stage('Procesando…');
+      this.busyCount=(this.busyCount||0)+1;
       try{await fn(stage);}
       catch(error){if(!error || !error.uncertain)this.toast(error.message,true);}
-      finally{if(button.isConnected){button.disabled=false;button.innerHTML=html;}}
+      finally{this.busyCount=Math.max(0,(this.busyCount||1)-1);if(button.isConnected){button.disabled=false;button.innerHTML=html;}}
     }
     // "timerGen" evita que se dupliquen las consultas de fondo. Cada pause() (llamado también desde
     // dentro de resume()) sube este número; cualquier cadena de consultas que haya quedado esperando
@@ -394,7 +398,7 @@
     measurementRule(c) { const ruleId = c.ruleId || (c.events && c.events[0] && c.events[0].ruleId); return ruleId ? (this.rules||[]).find(r => r.id === ruleId) : null; }
     measurementLabel(c) { const rule = this.measurementRule(c); return (rule && rule.customLabel) || 'Valor detectado'; }
     measurementText(c) { const rule = this.measurementRule(c); if (rule && rule.kind === 'none') return c.measurement ? 'Solo alerta' : 'No disponible'; return c.measurement && c.measurement.text || 'No disponible'; }
-    hasDraft(){const work=this.$('work');if(!work)return false;return work.dataset.dirty==='1'||[...work.querySelectorAll('textarea')].some(el=>el.value.trim())||[...work.querySelectorAll('input[type=file]')].some(el=>el.files&&el.files.length);}
+    hasDraft(){if(this.busyCount>0)return true;const work=this.$('work');if(!work)return false;return work.dataset.dirty==='1'||[...work.querySelectorAll('textarea')].some(el=>el.value.trim())||[...work.querySelectorAll('input[type=file]')].some(el=>el.files&&el.files.length);}
     clearSelection(force=false) {
       if(this.selected&&!force&&this.hasDraft()&&!window.confirm('Hay información sin enviar. ¿Desea cerrar la vista y descartarla?'))return false;
       this.selected=null;const shell=document.querySelector('.driver-shell');if(shell)shell.classList.remove('case-open');
