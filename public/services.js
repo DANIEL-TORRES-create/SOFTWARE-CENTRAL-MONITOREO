@@ -115,12 +115,14 @@
         };
         await send();
         if(onProgress)onProgress('Confirmando…');
-        let resent = false;
-        for (let attempt = 0; attempt < 155; attempt++) {
+        // Hasta unos 10 minutos de espera silenciosa: cubre una caída larga (de Drive, de red, lo que
+        // sea) sin mostrar ningún error ni pedir nada al usuario, siempre con el mismo número de
+        // operación, así que nunca se duplica. Además del reenvío a los ~15 s, se repite cada 2
+        // minutos por si el primer envío nunca llegó a salir del navegador.
+        const resendAt = new Set([24, 205, 405, 605, 805]);
+        for (let attempt = 0; attempt < 1005; attempt++) {
           await new Promise(resolve => setTimeout(resolve, attempt<8?250:600));
-          // Cerca de los 15 s, si aún no hay noticia, se reenvía una sola vez más, en silencio.
-          // Es seguro: el servidor reconoce el mismo número de operación y no lo procesa dos veces.
-          if (!resent && attempt===24) { resent = true; await send(); }
+          if (resendAt.has(attempt)) await send();
           let status;
           try {
             status = params.action==='v2.login'
@@ -180,7 +182,12 @@
     }
     async command(command, personId, onProgress) {
       const pending=await this.pendingCommand();
-      if(pending && pending.command.operationId!==command.operationId){const error=new Error('Hay un envío sin confirmar. Pulse Reintentar envío pendiente antes de continuar.');error.uncertain=true;throw error;}
+      if(pending && pending.command.operationId!==command.operationId){
+        // Antes de avisar nada, se intenta confirmar solo el envío anterior, en silencio (el mismo
+        // mecanismo de "Reintentar", pero automático). Solo si eso tampoco logra resolverlo se avisa.
+        try{ await this.command(pending.command,pending.personId); }
+        catch(_){ const error=new Error('Hay un envío sin confirmar. Pulse Reintentar envío pendiente antes de continuar.');error.uncertain=true;throw error; }
+      }
       // Persist before sending. If storage is full, no request is sent; evidence is never silently lost.
       await this.savePending({command,personId});
       try{
