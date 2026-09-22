@@ -1,18 +1,19 @@
 {
-  "name": "centralArdepe",
-  "supportEmail": "API.DANIEL@NAVISAF.PE",
-  "version": "2.4.4",
-  "items": [
-    {
-      "url": "https://daniel-torres-create.github.io/SOFTWARE-CENTRAL-MONITOREO/public/centralArdepe.html?v=2.4.4",
-      "path": "ActivityLink/",
-      "menuName": {
-        "es": "Central de Monitoreo",
-        "en": "Central de Monitoreo"
-      },
-      "svgIcon": "https://daniel-torres-create.github.io/SOFTWARE-CENTRAL-MONITOREO/public/assets/icon.svg?v=2.4.4"
-    }
-  ],
-  "isSigned": false,
-  "enableViewSecurityId": true
+    "name": "Central de Monitoreo",
+    "supportEmail": "API.DANIEL@NAVISAF.PE",
+    "version": "2.4.4",
+    "items": [
+        {
+            "url": "https://daniel-torres-create.github.io/SOFTWARE-CENTRAL-MONITOREO/public/centralArdepe.html?v=2.4.4",
+            "path": "MapLink",
+            "menuName": {
+                "en": "Central de Monitoreo",
+                "es": "Central de Monitoreo"
+            },
+            "icon": "https://www.geotab.com/favicon.ico",
+            "menuId": "CentralAlertas"
+        }
+    ],
+    "isSigned": false,
+    "enableViewSecurityId": true
 }
