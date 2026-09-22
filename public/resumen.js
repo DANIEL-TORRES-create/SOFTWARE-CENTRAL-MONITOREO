@@ -27,6 +27,12 @@
     cases.forEach(c => { const day = D.limaDay(c.occurredAt); map.set(day, (map.get(day) || 0) + 1); });
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }
+  function formatMinutes(min) {
+    min = Math.max(0, Math.round(Number(min) || 0));
+    const h = Math.floor(min / 60), m = min % 60;
+    return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+  }
+  function fieldLabel(field) { return field === 'type' ? 'Tipo' : field === 'cause' ? 'Causa' : 'Resultado'; }
   function avgCloseByPriority(cases) {
     return D.PRIORITIES.map(p => {
       const rows = cases.filter(c => c.priority === p && c.finalizedAt);
@@ -36,13 +42,16 @@
   }
   function monthlyTrend(allCasesByMonthFetcher) { return allCasesByMonthFetcher; } // se resuelve fuera (necesita red)
 
+  function lastOwner(c) { return (c.managements && c.managements.length) ? c.managements[c.managements.length - 1].owner || '' : ''; }
   function applyFilters(cases, filters) {
+    const ownerQuery = (filters.owner || '').trim().toLowerCase();
     return cases.filter(c =>
       (!filters.driverId || c.driverId === filters.driverId) &&
       (!filters.plate || c.plate === filters.plate) &&
       (!filters.type || c.type === filters.type) &&
       (!filters.cause || c.cause === filters.cause) &&
-      (!filters.result || c.result === filters.result)
+      (!filters.result || c.result === filters.result) &&
+      (!ownerQuery || lastOwner(c).toLowerCase().includes(ownerQuery))
     );
   }
 
@@ -65,9 +74,10 @@
       const x = gap + i * (w + gap), barH = Math.round(r[1] * scale), y = height - bottom - barH;
       const color = REDS[i % REDS.length];
       const label = String(r[0]).length > 14 ? String(r[0]).slice(0, 13) + '…' : String(r[0]);
+      const valueLabel = opts.labelFn ? opts.labelFn(r) : r[1];
       return '<g>' +
         '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + Math.max(1, barH) + '" fill="' + color + '" rx="2"></rect>' +
-        '<text x="' + (x + w / 2) + '" y="' + (y - 5) + '" font-size="11" fill="' + INK + '" text-anchor="middle">' + esc(r[1]) + '</text>' +
+        '<text x="' + (x + w / 2) + '" y="' + (y - 5) + '" font-size="11" fill="' + INK + '" text-anchor="middle">' + esc(valueLabel) + '</text>' +
         '<text x="' + (x + w / 2) + '" y="' + (height - bottom + 14) + '" font-size="10" fill="' + INK + '" text-anchor="middle" transform="rotate(20 ' + (x + w / 2) + ' ' + (height - bottom + 14) + ')">' + esc(label) + '</text>' +
         '</g>';
     }).join('');
@@ -93,28 +103,38 @@
     const font = await pdf.embedFont(StandardFonts.Helvetica), bold = await pdf.embedFont(StandardFonts.HelveticaBold);
     pdf.setTitle('ARDEPE - Resumen'); pdf.setCreationDate(new Date());
     const width = 595.28, height = 841.89, margin = 44, available = width - margin * 2;
-    let page = pdf.addPage([width, height]), y = height - margin;
-    function space(n) { if (y - n < 48) { page = pdf.addPage([width, height]); y = height - margin; } }
+    // El logo se toma del mismo que ya usa el PDF de atenciones (window.ArdepePDF), para no duplicar
+    // la imagen en dos archivos. Si por algún motivo no está disponible, el PDF se genera igual, sin logo.
+    const logoSrc = root.ArdepePDF && root.ArdepePDF.EMBEDDED_LOGO;
+    const logo = logoSrc ? await pdf.embedJpg(logoSrc) : null;
+    let page, y;
+    function newPage() { page = pdf.addPage([width, height]); y = height - 118; }
+    function drawHeader(target) {
+      if (!logo) return;
+      const top = height - 42, scale = Math.min(108 / logo.width, 42 / logo.height);
+      target.drawImage(logo, { x: margin, y: top - logo.height * scale + 5, width: logo.width * scale, height: logo.height * scale });
+      target.drawText('ARDEPE S.A.C.', { x: margin + 122, y: top, font: bold, size: 11, color: rgb(.65, .18, .15) });
+      target.drawText('Resumen de atenciones · Central Integral de Monitoreo', { x: margin + 122, y: top - 15, font, size: 9, color: rgb(.25, .31, .36) });
+      target.drawLine({ start: { x: margin, y: top - 30 }, end: { x: width - margin, y: top - 30 }, thickness: 1, color: rgb(.65, .18, .15) });
+    }
+    function space(n) { if (!page || y - n < 48) newPage(); }
     function text(value, opt) { opt = opt || {}; const size = opt.size || 10, f = opt.strong ? bold : font, color = opt.color || rgb(.15, .19, .23); space(size + 6); page.drawText(String(value), { x: margin, y, font: f, size, color }); y -= size + 6; }
     function heading(value) { space(30); y -= 6; text(value, { strong: true, size: 13, color: rgb(.65, .18, .15) }); }
+    newPage();
     text('ARDEPE · Resumen de atenciones', { strong: true, size: 16, color: rgb(.65, .18, .15) });
     text(payload.periodLabel);
     if (payload.filterLabel) text('Filtros: ' + payload.filterLabel, { size: 9 });
     text('Generado: ' + new Date().toLocaleString('es-PE', { timeZone: 'America/Lima' }), { size: 9 });
     heading('Totales del período');
     text('Total de casos: ' + payload.totals.total + '   Finalizados: ' + payload.totals.done + '   Activos: ' + payload.totals.active);
-    text('Promedio hasta iniciar: ' + payload.totals.avgStart + ' min   Promedio hasta finalizar: ' + payload.totals.avgClose + ' min');
+    text('Promedio hasta iniciar: ' + formatMinutes(payload.totals.avgStart) + '   Promedio hasta finalizar: ' + formatMinutes(payload.totals.avgClose));
     for (const section of payload.sections) {
       if (!section.rows.length) continue;
       heading(section.title);
-      if (section.kind === 'table') {
-        for (const r of section.rows) text(r[0] + ': ' + r[1], { size: 9 });
-      } else {
-        for (const r of section.rows) text(r[0] + ': ' + r[1], { size: 9 });
-      }
+      for (const r of section.rows) text(r[0] + ': ' + r[1], { size: 9 });
     }
     const pages = pdf.getPages();
-    pages.forEach((p, i) => p.drawText('ARDEPE - Resumen - ' + (i + 1) + ' / ' + pages.length, { x: margin, y: 25, font, size: 9, color: rgb(.4, .4, .4) }));
+    pages.forEach((p, i) => { drawHeader(p); p.drawText('ARDEPE - Resumen - ' + (i + 1) + ' / ' + pages.length, { x: margin, y: 25, font, size: 9, color: rgb(.4, .4, .4) }); });
     return pdf.save();
   }
 
@@ -228,5 +248,5 @@
     return buildZip(files);
   }
 
-  root.ArdepeResumen = { countBy, countByRule, countByDay, avgCloseByPriority, applyFilters, totals, barChartSVG, tableHTML, exportPDF, exportExcel, ruleLabel };
+  root.ArdepeResumen = { countBy, countByRule, countByDay, avgCloseByPriority, applyFilters, totals, barChartSVG, tableHTML, exportPDF, exportExcel, ruleLabel, formatMinutes, fieldLabel, lastOwner };
 })(typeof window === 'undefined' ? globalThis : window);
