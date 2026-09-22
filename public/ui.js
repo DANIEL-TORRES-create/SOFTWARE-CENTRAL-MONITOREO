@@ -84,14 +84,14 @@
       const groupField = this.summaryGroup || 'type';
       const groupRows = groupField === 'type' ? R.countBy(cases, 'type') : groupField === 'cause' ? R.countBy(cases, 'cause') : R.countBy(cases, 'result');
       const html =
-        '<div class="filter-row" style="flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px">' +
+        '<div class="filter-row" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px">' +
         '<label style="width:160px">Conductor<input id="a-sf-driver" list="a-sf-driver-list" placeholder="Todos" value="' + esc(data.filters.driverId ? (driverNames.find(d=>d[0]===data.filters.driverId)||[,''])[1] : '') + '"><datalist id="a-sf-driver-list">' + driverNames.map(d => '<option value="' + esc(d[1]) + '">').join('') + '</datalist></label>' +
         '<label style="width:140px">Vehículo<input id="a-sf-plate" list="a-sf-plate-list" placeholder="Todos" value="' + esc(data.filters.plate || '') + '"><datalist id="a-sf-plate-list">' + plates.map(p => '<option value="' + esc(p) + '">').join('') + '</datalist></label>' +
         '<label style="width:140px">Tipo<select id="a-sf-type"><option value="">Todos</option>' + D.TYPES.map(x => '<option' + (data.filters.type === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
         '<label style="width:140px">Causa<select id="a-sf-cause"><option value="">Todas</option>' + D.CAUSES.map(x => '<option' + (data.filters.cause === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
         '<label style="width:160px">Resultado<select id="a-sf-result"><option value="">Todos</option>' + D.RESULTS.map(x => '<option' + (data.filters.result === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
         '<label style="width:160px">Responsable<input id="a-sf-owner" list="a-sf-owner-list" placeholder="Todos" value="' + esc(data.filters.owner || '') + '"><datalist id="a-sf-owner-list">' + ownerNames.map(n => '<option value="' + esc(n) + '">').join('') + '</datalist></label>' +
-        '<button id="a-sf-apply" class="primary">Aplicar</button><button id="a-sf-clear">Limpiar filtros</button>' +
+        '<button id="a-sf-apply" class="primary" style="flex:none">Aplicar</button><button id="a-sf-clear" style="flex:none">Limpiar filtros</button>' +
         '</div>' +
         '<div class="export-row" style="display:flex;gap:10px;margin-bottom:14px">' +
         '<button id="a-sf-pdf">Exportar PDF</button><button id="a-sf-xlsx">Exportar Excel</button>' +
