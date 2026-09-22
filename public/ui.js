@@ -18,18 +18,28 @@
       this.summaryMode = true; this.summaryData = null;
       this.$('create').hidden = true; if (this.$('summary-back')) this.$('summary-back').hidden = false;
       this.$('summary').classList.add('active');
-      ['queue-panel','context-panel','management-panel'].forEach(cls => { const el = document.querySelector('.' + cls); if (el) el.hidden = true; });
+      // Se ocultan también la barra de filtros normal (pestañas Geotab/Central/Conductor, estado,
+      // prioridad, buscador), las métricas del día y el aviso de límites: en Resumen no aplican.
+      ['queue-panel','context-panel','management-panel','filters'].forEach(cls => { const el = document.querySelector('.' + cls); if (el) el.hidden = true; });
+      if (this.$('metrics')) this.$('metrics').hidden = true;
+      if (this.$('limits-banner')) this.$('limits-banner').hidden = true;
+      if (this.$('history-banner')) this.$('history-banner').hidden = true;
       this.$('summary-panel').hidden = false;
       this.updateRecovery();
+      this.pause(); // se pausa el refresco de fondo: cargar el Resumen puede pedir varias páginas seguidas
       this.renderSummaryHint();
     }
     exitSummary() {
       this.summaryMode = false; this.summaryData = null;
       this.$('create').hidden = false; if (this.$('summary-back')) this.$('summary-back').hidden = true;
       this.$('summary').classList.remove('active');
-      ['queue-panel','context-panel','management-panel'].forEach(cls => { const el = document.querySelector('.' + cls); if (el) el.hidden = false; });
+      ['queue-panel','context-panel','management-panel','filters'].forEach(cls => { const el = document.querySelector('.' + cls); if (el) el.hidden = false; });
+      if (this.$('metrics')) this.$('metrics').hidden = false;
+      if (this.$('limits-banner')) this.$('limits-banner').hidden = false;
       this.$('summary-panel').hidden = true;
       this.updateRecovery();
+      this.resume();
+      this.renderList(); this.metrics(); this.renderLimits();
     }
     renderSummaryHint() {
       this.$('summary-content').innerHTML = '<div class="empty"><strong>Seleccione un período en Histórico para ver el resumen.</strong>Elija Hoy, Ayer, Últimos 7 días, o un rango de fechas, y pulse Consultar.</div>';
@@ -108,8 +118,8 @@
       };
       this.$('sf-clear').onclick = () => { data.filters = {}; this.renderSummaryDashboard(); };
       this.$('sf-group-sel').onchange = () => { this.summaryGroup = this.$('sf-group-sel').value; this.renderSummaryDashboard(); };
-      this.$('sf-pdf').onclick = () => this.run(this.$('sf-pdf'), () => this.exportSummaryPDF(cases, trendCases, rules, data));
-      this.$('sf-xlsx').onclick = () => this.run(this.$('sf-xlsx'), () => this.exportSummaryExcel(cases, trendCases, rules, data));
+      this.$('sf-pdf').onclick = () => this.run(this.$('sf-pdf'), stage => this.exportSummaryPDF(cases, trendCases, rules, data, stage));
+      this.$('sf-xlsx').onclick = () => this.run(this.$('sf-xlsx'), stage => this.exportSummaryExcel(cases, trendCases, rules, data, stage));
     }
     summaryCard(id, title, control, bodyHtml) {
       return '<div style="width:480px;height:340px;background:#fff;border:1px solid var(--line);border-radius:6px;display:flex;flex-direction:column;overflow:hidden">' +
@@ -123,7 +133,9 @@
       cases.forEach(c => { const key = String(c.occurredAt).slice(0,7); if (counts.has(key)) counts.set(key, counts.get(key) + 1); });
       return [...map.keys()].map(k => [map.get(k), counts.get(k)]);
     }
-    async exportSummaryPDF(cases, trendCases, rules, data) {
+    async exportSummaryPDF(cases, trendCases, rules, data, onProgress) {
+      if (!cases.length) throw new Error('No hay datos para exportar con estos filtros');
+      if (onProgress) onProgress('Ejecutando…');
       const R = window.ArdepeResumen, t = R.totals(cases);
       const groupField = this.summaryGroup || 'type';
       const bytes = await R.exportPDF({
@@ -137,14 +149,14 @@
           { title: 'Por regla de Geotab', rows: R.countByRule(cases, rules) },
         ]
       });
-      if (!cases.length) throw new Error('No hay datos para exportar con estos filtros');
       const url = URL.createObjectURL(new Blob([bytes],{type:'application/pdf'})), link = document.createElement('a');
       link.href=url;link.download='ARDEPE_resumen_'+D.limaDay(new Date())+'.pdf';link.hidden=true;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
       this.toast('PDF generado');
     }
-    async exportSummaryExcel(cases, trendCases, rules, data) {
+    async exportSummaryExcel(cases, trendCases, rules, data, onProgress) {
       const R = window.ArdepeResumen;
       if (!cases.length) throw new Error('No hay datos para exportar con estos filtros');
+      if (onProgress) onProgress('Ejecutando…');
       const groupField = this.summaryGroup || 'type';
       const bytes = await R.exportExcel([
         { name: 'Resumen', headers: ['Período','Filtros','Total','Finalizados','Activos'], rows: [[data.periodLabel, this.summaryFilterLabel(data.filters)||'Ninguno', cases.length, cases.filter(c=>c.status==='FINALIZADA').length, cases.filter(c=>c.status!=='FINALIZADA').length]] },
@@ -243,19 +255,31 @@
     hideToast(){clearTimeout(this.toastTimer);const toast=this.$('toast');if(toast){toast.hidden=true;toast.textContent='';toast.className='toast';}}
     toast(message, error) { this.hideToast();const toast=this.$('toast');toast.textContent=message;toast.className='toast' + (error ? ' error' : '');toast.hidden=false;this.toastTimer=setTimeout(()=>this.hideToast(),4000); }
     async run(button, fn) { if (button.disabled) return; const html = button.innerHTML,stage=label=>{if(button.isConnected)button.innerHTML='<span class="spinner"></span>'+label;};button.disabled=true;stage('Procesando…');try{await fn(stage);}catch(error){this.toast(error.message,true);}finally{if(button.isConnected){button.disabled=false;button.innerHTML=html;}} }
-    pause() { clearTimeout(this.timer); clearInterval(this.clock); }
+    // "timerGen" evita que se dupliquen las consultas de fondo. Cada pause() (llamado también desde
+    // dentro de resume()) sube este número; cualquier cadena de consultas que haya quedado esperando
+    // una respuesta de red revisa este número antes de programarse de nuevo, y si ya no coincide, se
+    // detiene sola en vez de seguir corriendo en paralelo con la cadena nueva. Antes de este cambio,
+    // pausar mientras una consulta seguía en camino no la cancelaba, y al terminar igual se volvía a
+    // programar, dejando cadenas duplicadas corriendo para siempre y haciendo el sistema cada vez más
+    // lento cuanto más tiempo llevara la pestaña abierta.
+    pause() { clearTimeout(this.timer); clearInterval(this.clock); this.timerGen = (this.timerGen || 0) + 1; }
     focus() { this.hideToast();this.stopBackgroundNotifications();this.resume(); }
     blur() { this.hideToast();this.pause();if(this.role==='driver'&&this.service&&!this.demo)this.startBackgroundNotifications(this.service); }
-    resume() { if (!this.mounted || !this.service) return; this.pause(); this.scheduleCheck(); this.clock = setInterval(() => this.tick(), 1000); }
+    resume() { if (!this.mounted || !this.service) return; this.pause(); this.scheduleCheck(this.timerGen); this.clock = setInterval(() => this.tick(), 1000); }
     // En vez de un intervalo fijo, se reprograma cada vez con el tiempo que toque: más seguido en
     // modo activo (tras enviar o abrir algo) o mientras se muestra un caso, más espaciado el resto
     // del tiempo. Antes de cada consulta completa se pregunta primero la marca liviana; solo se
     // repite la consulta completa si la marca cambió, o cada 60 s de todas formas como red de
     // seguridad (por si la marca se perdiera de la memoria del servidor).
-    scheduleCheck() {
+    scheduleCheck(gen) {
+      gen = gen == null ? this.timerGen : gen;
       const active = Date.now() < this.activeUntil || Boolean(this.selected);
       const interval = active ? 3000 : (this.role === 'central' ? 5000 : 15000);
-      this.timer = setTimeout(() => { if (this.mode === 'live') this.checkForChanges().catch(e => this.status(e.message, true)).finally(() => this.scheduleCheck()); else this.scheduleCheck(); }, interval);
+      this.timer = setTimeout(() => {
+        if (gen !== this.timerGen) return; // esta cadena quedó obsoleta: hubo un pause()/resume() mientras esperaba
+        if (this.mode === 'live') this.checkForChanges().catch(e => this.status(e.message, true)).finally(() => { if (gen === this.timerGen) this.scheduleCheck(gen); });
+        else this.scheduleCheck(gen);
+      }, interval);
     }
     async checkForChanges() {
       if (!this.service || this.refreshing) return;
@@ -372,11 +396,13 @@
     // rojo al 90%. El amarillo se puede cerrar por esta sesión; el rojo no, y vuelve a aparecer si
     // la medición sigue subiendo. Se apaga por completo desde Administración → Operación.
     limitsConfig() {
+      // "Tiempo de consulta" se sacó de este aviso: es una medición del momento (puede subir por
+      // una conexión lenta puntual o un reintento automático) y no un recurso que se va acumulando
+      // como los otros tres, así que avisar por eso solo generaba ruido sin una acción real detrás.
       return [
         { key:'active', label:'Casos activos', value: this.limits && this.limits.activeCount, yellow:350, red:450, fmt:v=>v+' de 500' },
         { key:'cells', label:'Celdas del archivo de control', value: this.limits && this.limits.controlCells, yellow:7000000, red:9000000, fmt:v=>(v/1000000).toFixed(1)+' de 10 millones' },
         { key:'audit', label:'Filas de auditoría del mes', value: this.limits && this.limits.auditRows, yellow:35000, red:45000, fmt:v=>v+' de 50 000' },
-        { key:'query', label:'Tiempo de consulta', value: this.queryMs, yellow:10000, red:20000, fmt:v=>(v/1000).toFixed(1)+' s de 30 s' },
       ];
     }
     renderLimits() {
@@ -480,6 +506,9 @@
       const signature = JSON.stringify({type,payload,id,person:this.$('person').value});
       let command = this.pending.get(signature);
       if (!command) { command = { type, payload, caseId:id, version:current && current.version || 0, operationId:S.uid(),receipt:S.uid() }; this.pending.set(signature,command); }
+      // Se pausa el refresco de fondo mientras dura el envío, para que no compita por la misma
+      // conexión justo cuando más importa que el envío llegue rápido. Se retoma apenas termina.
+      this.pause();
       try {
         const result = await this.service.command(command,this.$('person').value,onProgress);
         this.noteActivity();
@@ -488,6 +517,7 @@
         if (this.mode !== 'live') this.historyRows = (this.historyRows || []).map(c => c.id === result.id ? result : c);
         this.renderContext(); this.renderWork(true); this.renderList(); this.metrics(); await this.updateRecovery(); return result;
       } catch (error) { if (!error.uncertain) this.pending.delete(signature); else if(this.$('recover'))this.$('recover').hidden=false; throw error; }
+      finally { this.resume(); }
     }
     async take(onProgress) { if(this.role==='central'&&!this.$('person').value)return this.toast('Seleccione personal activo antes de continuar',true); const c = this.selected;if(onProgress)onProgress('Guardando…');if (!c.version) await this.command('create',{...c,caseId:c.caseId || (c.caseId=D.month(new Date())+'_'+S.uid())},c,onProgress); else await this.command('take',{},c,onProgress); this.renderWork(); this.toast('Atención iniciada'); }
     dialog(title, html) { this.$('dialog-title').textContent = title; this.$('dialog-body').innerHTML = html; if (!this.$('dialog').open) this.$('dialog').showModal(); }
