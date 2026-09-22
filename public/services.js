@@ -166,6 +166,9 @@
       });
       const auth = await this.request({ action: 'v2.login', operationId: uid(), receipt: uid(), credentials: JSON.stringify(session), role: this.role, driverId: driver ? driver.id : '' }, true);
       this.token = auth.token; this.actor = auth.actor;
+      // Al abrir sesión, se retoma en silencio cualquier envío que haya quedado sin confirmar de
+      // una vez anterior (por ejemplo, si se cerró la pestaña antes de que terminara de resolverse).
+      this.resolveStalePending();
     }
     async bootstrap() {
       const response = await this.request({ action: 'v2.bootstrap' });
@@ -178,17 +181,37 @@
       if(!window.indexedDB)return Promise.resolve(null);
       return new Promise((resolve,reject)=>{const request=indexedDB.open('ardepe-central-v2',1);request.onupgradeneeded=()=>request.result.createObjectStore('pending');request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
     }
-    async pendingCommand() {
-      try{const db=await this.pendingDb();if(db)return await new Promise((resolve,reject)=>{const request=db.transaction('pending','readonly').objectStore('pending').get(this.pendingKey());request.onsuccess=()=>resolve(request.result||null);request.onerror=()=>reject(request.error);});}catch(_){}
-      try{return JSON.parse(sessionStorage.getItem(this.pendingKey())||'null');}catch(_){return null;}
+    // Cada envío guarda su propia entrada, identificada por su número de operación, dentro de un
+    // mismo mapa. Así, un envío que siga sin confirmarse nunca bloquea a otro distinto: cada uno
+    // se resuelve por su cuenta, en paralelo, sin que el usuario tenga que esperar ni intervenir.
+    async pendingMap() {
+      try{const db=await this.pendingDb();if(db)return await new Promise((resolve,reject)=>{const request=db.transaction('pending','readonly').objectStore('pending').get(this.pendingKey());request.onsuccess=()=>resolve(request.result||{});request.onerror=()=>reject(request.error);});}catch(_){}
+      try{return JSON.parse(sessionStorage.getItem(this.pendingKey())||'{}')||{};}catch(_){return {};}
     }
-    async savePending(value) {
-      try{const db=await this.pendingDb();if(db){await new Promise((resolve,reject)=>{const transaction=db.transaction('pending','readwrite');transaction.objectStore('pending').put(value,this.pendingKey());transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);});return;}}catch(_){}
-      try{sessionStorage.setItem(this.pendingKey(),JSON.stringify(value));}catch(_){throw new Error('No hay espacio local para conservar el envío. No se enviaron datos; reduzca los adjuntos o libere almacenamiento.');}
+    async pendingCommand() { const map=await this.pendingMap(); const keys=Object.keys(map); return keys.length?map[keys[0]]:null; }
+    async savePendingMap(map) {
+      try{const db=await this.pendingDb();if(db){await new Promise((resolve,reject)=>{const transaction=db.transaction('pending','readwrite');transaction.objectStore('pending').put(map,this.pendingKey());transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);});return;}}catch(_){}
+      try{sessionStorage.setItem(this.pendingKey(),JSON.stringify(map));}catch(_){throw new Error('No hay espacio local para conservar el envío. No se enviaron datos; reduzca los adjuntos o libere almacenamiento.');}
     }
-    async clearPending() {
-      try{const db=await this.pendingDb();if(db)await new Promise((resolve,reject)=>{const transaction=db.transaction('pending','readwrite');transaction.objectStore('pending').delete(this.pendingKey());transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);});}catch(_){}
-      sessionStorage.removeItem(this.pendingKey());
+    async savePendingEntry(entry) { const map=await this.pendingMap(); map[entry.command.operationId]=entry; await this.savePendingMap(map); }
+    async clearPendingEntry(operationId) { const map=await this.pendingMap(); delete map[operationId]; try{await this.savePendingMap(map);}catch(_){} }
+    // Se ejecuta sola, sin que nadie la espere ni quede bloqueado por ella: recorre cualquier envío
+    // que haya quedado sin confirmar (de otra acción, u otra pestaña) e intenta resolverlo, en
+    // silencio, con el mismo mecanismo de siempre. Un rechazo real (ya no aplica) se descarta; uno
+    // incierto se deja para el próximo intento, sin avisar nada mientras tanto.
+    async resolveStalePending(skipOperationId) {
+      if (this._resolvingStale) return; this._resolvingStale = true;
+      try {
+        const map = await this.pendingMap();
+        for (const operationId of Object.keys(map)) {
+          if (operationId === skipOperationId) continue;
+          const entry = map[operationId];
+          try {
+            await this.request({ action: 'v2.command', operationId, receipt: entry.command.receipt, command: JSON.stringify(entry.command), personId: entry.personId || '' }, true, false);
+            await this.clearPendingEntry(operationId);
+          } catch (error) { if (error.definitive) await this.clearPendingEntry(operationId); }
+        }
+      } finally { this._resolvingStale = false; }
     }
     async recoverPending() {
       const pending=await this.pendingCommand();
@@ -196,19 +219,14 @@
       return this.command(pending.command,pending.personId);
     }
     async command(command, personId, onProgress) {
-      const pending=await this.pendingCommand();
-      if(pending && pending.command.operationId!==command.operationId){
-        // Antes de avisar nada, se intenta confirmar solo el envío anterior, en silencio (el mismo
-        // mecanismo de "Reintentar", pero automático). Solo si eso tampoco logra resolverlo se avisa.
-        try{ await this.command(pending.command,pending.personId); }
-        catch(_){ const error=new Error('Hay un envío sin confirmar. Pulse Reintentar envío pendiente antes de continuar.');error.uncertain=true;throw error; }
-      }
-      // Persist before sending. If storage is full, no request is sent; evidence is never silently lost.
-      await this.savePending({command,personId});
+      // No se espera a que otros envíos sin confirmar terminen: este sigue de largo, y los demás
+      // (si los hay) se resuelven por su cuenta en segundo plano, sin bloquear ni avisar nada.
+      this.resolveStalePending(command.operationId);
+      await this.savePendingEntry({command,personId});
       try{
         const result=await this.request({ action: 'v2.command', operationId: command.operationId, receipt: command.receipt, command: JSON.stringify(command), personId: personId || '' }, true, false, onProgress);
-        await this.clearPending();return result;
-      }catch(error){if(!error.definitive)error.uncertain=true;if(!error.uncertain)await this.clearPending();throw error;}
+        await this.clearPendingEntry(command.operationId);return result;
+      }catch(error){if(!error.definitive)error.uncertain=true;if(!error.uncertain)await this.clearPendingEntry(command.operationId);throw error;}
     }
     async devices() {
       if (!this.deviceList) {
