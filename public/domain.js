@@ -11,7 +11,7 @@
     EN_SEGUIMIENTO: 'En seguimiento', CAPACITACION_PENDIENTE: 'Capacitación pendiente',
     REVISION_TECNICA_PENDIENTE: 'Revisión técnica pendiente', ESCALADO: 'Escalado', FINALIZADA: 'Atención finalizada'
   });
-  const RESULTS = ['Evento confirmado', 'Evento justificado', 'Falsa alerta', 'No amerita descargo', 'Atención telefónica suficiente', 'Sin elementos para continuar', 'Derivado a otra área'];
+  const RESULTS = ['Evento confirmado', 'Evento justificado', 'Falsa alerta', 'Solo informativo', 'No amerita descargo', 'Atención telefónica suficiente', 'Sin elementos para continuar', 'Derivado a otra área'];
   const TYPES = ['Accidente', 'Incidente', 'Falla vehículo', 'Condición peligrosa vía', 'Emergencia operativa', 'Otro'];
   const CAUSES = ['Conducta insegura', 'Condición de la vía', 'Emergencia operativa', 'Falla del vehículo', 'Tránsito', 'Instrucción operativa', 'No determinada'];
   const ACTIONS = ['Recomendación', 'Capacitación', 'Revisión técnica', 'Comunicar supervisor', 'Escalar jefatura', 'Seguimiento operaciones', 'No requiere'];
@@ -155,17 +155,24 @@
       if (actor.role === 'central' && (!data.operator || data.operator.id !== actor.person.id)) throw new Error('Inicie la atención con el operador asignado');
       const message = { id: command.operationId, authorId: actor.role === 'driver' ? actor.id : actor.person.id,
         author: actor.role === 'driver' ? actor.name : actor.person.name, role: actor.role,
-        text: required(payload.text, 'Mensaje'), at: now, requiresResponse: actor.role === 'central' && Boolean(payload.requiresResponse) };
+        text: required(payload.text, 'Mensaje'), at: now, requiresResponse: actor.role === 'central' && Boolean(payload.requiresResponse), confirmationOnly: Boolean(payload.confirmationOnly) };
       data.messages.push(message);
       if (actor.role === 'driver') { data.status = 'RESPUESTA_RECIBIDA'; data.lastDriverMessageAt = now; data.firstResponseAt = data.firstResponseAt || now; }
       else { data.lastCentralMessageAt = now; if (message.requiresResponse) data.status = payload.clarification ? 'ESPERANDO_ACLARACION' : 'ESPERANDO_CONDUCTOR'; }
     } else if (type === 'manage') {
       central(actor);
       if (!data.operator || data.operator.id !== actor.person.id) throw new Error('El caso está asignado a otro operador');
-      if (!RESULTS.includes(payload.result) || !CAUSES.includes(payload.cause) || !CHANNELS.includes(payload.channel) || !ACTIONS.includes(payload.action)) throw new Error('Complete resultado, causa, canal y acción');
+      if (!RESULTS.includes(payload.result)) throw new Error('Complete resultado, causa, canal y acción');
+      // "Falsa alerta" y "Solo informativo" no describen una investigación: no exigen causa, canal,
+      // tipo de acción, ni el detalle de qué se hizo o un resumen, para poder cerrar el caso directo.
+      const informative = ['Falsa alerta', 'Solo informativo'].includes(payload.result);
+      if (!informative) {
+        if (!CAUSES.includes(payload.cause) || !CHANNELS.includes(payload.channel) || !ACTIONS.includes(payload.action)) throw new Error('Complete resultado, causa, canal y acción');
+        required(payload.immediateAction, 'Acción realizada');
+      }
       const next = payload.status;
       if (!['EN_GESTION', 'FINALIZADA'].concat(FOLLOW_STATES).includes(next)) throw new Error('Estado de gestión inválido');
-      required(payload.summary, 'Resumen y observaciones'); required(payload.immediateAction, 'Acción realizada');
+      if (!informative) required(payload.summary, 'Resumen y observaciones');
       if (FOLLOW_STATES.includes(next)) { required(payload.owner, 'Responsable de seguimiento'); if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.dueDate || '')) throw new Error('Fecha límite de seguimiento obligatoria'); }
       data.managements.push({ ...payload, id: command.operationId, person: actor.person, at: now });
       data.result = payload.result; data.status = next;
