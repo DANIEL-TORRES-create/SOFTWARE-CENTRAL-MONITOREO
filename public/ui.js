@@ -25,7 +25,6 @@
       if (this.$('limits-banner')) this.$('limits-banner').hidden = true;
       if (this.$('history-banner')) this.$('history-banner').hidden = true;
       this.$('summary-panel').hidden = false;
-      this.updateRecovery();
       this.pause(); // se pausa el refresco de fondo: cargar el Resumen puede pedir varias páginas seguidas
       this.renderSummaryHint();
     }
@@ -37,7 +36,6 @@
       if (this.$('metrics')) this.$('metrics').hidden = false;
       if (this.$('limits-banner')) this.$('limits-banner').hidden = false;
       this.$('summary-panel').hidden = true;
-      this.updateRecovery();
       this.resume();
       this.renderList(); this.metrics(); this.renderLimits();
     }
@@ -214,8 +212,8 @@
       const driver = this.role === 'driver';
       const logo = 'https://daniel-torres-create.github.io/SOFTWARE-CENTRAL-MONITOREO/public/assets/logo.png?v=20260919-2';
       const actions = driver
-        ? '<div class="commandbar driver-actions"><select id="a-person" hidden><option value=""></option></select><button id="a-create" class="primary"><span class="action-icon">＋</span><span>Reportar</span></button><button id="a-history"><span class="action-icon">▤</span><span>Historial</span></button><button id="a-guide"><span class="action-icon">?</span><span>Ayuda</span></button><button id="a-recover"><span class="action-icon">↻</span><span>Reintentar envío pendiente</span></button></div>'
-        : '<div class="commandbar"><div class="operator"><label>Personal activo<select id="a-person"><option value="">Seleccione personal</option></select></label></div><button id="a-history">Histórico</button><button id="a-create" class="primary">Crear caso</button><button id="a-summary-back" hidden>Volver al panel</button><button id="a-recover">Reintentar envío pendiente</button><button id="a-guide">Guía</button><button id="a-admin" aria-label="Administración">⚙</button></div>';
+        ? '<div class="commandbar driver-actions"><select id="a-person" hidden><option value=""></option></select><button id="a-create" class="primary"><span class="action-icon">＋</span><span>Reportar</span></button><button id="a-history"><span class="action-icon">▤</span><span>Historial</span></button><button id="a-guide"><span class="action-icon">?</span><span>Ayuda</span></button></div>'
+        : '<div class="commandbar"><div class="operator"><label>Personal activo<select id="a-person"><option value="">Seleccione personal</option></select></label></div><button id="a-history">Histórico</button><button id="a-create" class="primary">Crear caso</button><button id="a-summary-back" hidden>Volver al panel</button><button id="a-guide">Guía</button><button id="a-admin" aria-label="Administración">⚙</button></div>';
       const tabs = (driver ? [['NEW','Nuevos'],['ACTIVE','En curso'],['DONE','Finalizados']] : [['GEOTAB','Alertas Geotab'],['CENTRAL','Solicitudes de Central'],['CONDUCTOR','Reportes del conductor']]).map(([id,label]) => '<button data-origin="' + id + '" class="' + (id === this.origin ? 'active' : '') + '">' + label + '<span class="tab-count" data-origin-count="'+id+'"></span></button>').join('');
       const filters = driver
         ? '<section class="filters driver-filters"><nav class="tabs" id="a-tabs" aria-label="Casos">' + tabs + '</nav><details class="filter-disclosure"><summary>Buscar y filtrar</summary><div class="filter-row"><select id="a-state" aria-label="Estado"><option value="ALL">Todos los estados activos</option><option value="OLD">Pendientes anteriores</option>' + Object.entries(D.STATES).map(([id,label]) => '<option value="' + id + '">' + label + '</option>').join('') + '</select><select id="a-priority" aria-label="Prioridad"><option value="ALL">Todas las prioridades</option>' + options(D.PRIORITIES) + '</select><input id="a-search" type="search" placeholder="Buscar vehículo o motivo" aria-label="Buscar casos"><button id="a-refresh">Actualizar</button></div></details></section>'
@@ -247,8 +245,6 @@
       if (this.$('summary')) this.$('summary').onclick = () => this.enterSummary();
       if (this.$('summary-back')) this.$('summary-back').onclick = () => this.exitSummary();
       this.$('live').onclick = () => { if(!this.clearSelection())return;this.mode = 'live'; this.$('history-banner').hidden = true; this.$('state').value = 'ALL'; if(this.role==='central'&&this.origin==='ALL')this.origin='GEOTAB';if(this.role==='driver'&&this.origin==='ALL')this.origin='NEW';this.$('tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.origin===this.origin));this.refresh().catch(e => this.toast(e.message, true)); };
-      this.$('recover').hidden=true;
-      this.$('recover').onclick=()=>this.run(this.$('recover'),async()=>{if(!this.service.recoverPending)throw new Error('Conecte Geotab primero');const result=await this.service.recoverPending();this.pending.clear();this.selected=result;await this.refresh();this.renderContext();this.renderWork();this.toast('Envío pendiente confirmado');});
       this.$('guide').onclick = () => this.guide();
       if (this.$('drive-back')) this.$('drive-back').onclick = () => this.goDriveHome();
       this.$('export-all').onclick = () => this.run(this.$('export-all'), stage => this.exportCases(this.filtered().filter(c => c.version), stage));
@@ -258,7 +254,22 @@
     status(message, error) { this.$('connection').textContent = message; this.$('connection').className = 'connection' + (error ? ' error' : ''); }
     hideToast(){clearTimeout(this.toastTimer);const toast=this.$('toast');if(toast){toast.hidden=true;toast.textContent='';toast.className='toast';}}
     toast(message, error) { this.hideToast();const toast=this.$('toast');toast.textContent=message;toast.className='toast' + (error ? ' error' : '');toast.hidden=false;this.toastTimer=setTimeout(()=>this.hideToast(),4000); }
-    async run(button, fn) { if (button.disabled) return; const html = button.innerHTML,stage=label=>{if(button.isConnected)button.innerHTML='<span class="spinner"></span>'+label;};button.disabled=true;stage('Procesando…');try{await fn(stage);}catch(error){this.toast(error.message,true);}finally{if(button.isConnected){button.disabled=false;button.innerHTML=html;}} }
+    // Un clic ya no deja la pantalla esperando: se espera un momento razonable (8 s) y, si para
+    // entonces no hay respuesta, el botón se libera solo y la persona sigue usando la app con
+    // normalidad. Por dentro, el envío sigue intentando confirmarse solo, en silencio, hasta que
+    // termine (el mismo mecanismo de siempre). Si al final resulta ser un rechazo real (algo que
+    // exige corregir algo, como "El caso cambió"), recién ahí se avisa, aunque haya sido más tarde.
+    async run(button, fn) {
+      if (button.disabled) return;
+      const html = button.innerHTML;
+      let active = true;
+      const stage = label => { if (active && button.isConnected) button.innerHTML = '<span class="spinner"></span>' + label; };
+      const release = () => { if (active) { active = false; if (button.isConnected) { button.disabled = false; button.innerHTML = html; } } };
+      button.disabled = true; stage('Procesando…');
+      const work = (async () => { try { await fn(stage); } catch (error) { if (error && error.definitive) this.toast(error.message, true); } })();
+      await Promise.race([work, new Promise(resolve => setTimeout(resolve, 8000))]);
+      release();
+    }
     // "timerGen" evita que se dupliquen las consultas de fondo. Cada pause() (llamado también desde
     // dentro de resume()) sube este número; cualquier cadena de consultas que haya quedado esperando
     // una respuesta de red revisa este número antes de programarse de nuevo, y si ya no coincide, se
@@ -281,7 +292,13 @@
       const interval = active ? 3000 : (this.role === 'central' ? 5000 : 15000);
       this.timer = setTimeout(() => {
         if (gen !== this.timerGen) return; // esta cadena quedó obsoleta: hubo un pause()/resume() mientras esperaba
-        if (this.mode === 'live') this.checkForChanges().catch(e => this.status(e.message, true)).finally(() => { if (gen === this.timerGen) this.scheduleCheck(gen); });
+        if (this.mode === 'live') this.checkForChanges()
+          .then(() => { this.backgroundFailStreak = 0; })
+          // Un solo tropiezo de conexión no se muestra: es normal y se resuelve solo en el próximo
+          // ciclo. Solo si ya van varias seguidas fallando se avisa, y con un texto tranquilo, no
+          // el mensaje técnico crudo (que puede decir cosas como "fetch is aborted").
+          .catch(() => { this.backgroundFailStreak = (this.backgroundFailStreak || 0) + 1; if (this.backgroundFailStreak >= 3) this.status('Actualizando con demora…', true); })
+          .finally(() => { if (gen === this.timerGen) this.scheduleCheck(gen); });
         else this.scheduleCheck(gen);
       }, interval);
     }
@@ -312,13 +329,8 @@
           const fresh = this.cases.find(c => c.id === this.selected.id);
           if (fresh && fresh.version !== this.selected.version) { this.selected = fresh;if(!this.hasDraft()){this.renderContext();this.renderWork(true);} }
         }
-        await this.updateRecovery();
         this.status(this.demo ? 'Demostración conectada' : 'Conectado · ' + new Date().toLocaleTimeString('es-PE'));
       } finally { this.refreshing = false; }
-    }
-    async updateRecovery() {
-      if (!this.$('recover') || this.demo || !this.service || !this.service.pendingCommand) return;
-      this.$('recover').hidden = this.summaryMode || !(await this.service.pendingCommand());
     }
     goDriveHome() {
       const mobile=this.api&&this.api.mobile,navigate=mobile&&mobile.navigate;
@@ -598,8 +610,8 @@
         this.pending.delete(signature); this.cases = this.cases.filter(c => c.id !== result.id).concat(result); this.selected = result;
         if (this.role === 'driver') document.querySelector('.driver-shell').classList.add('case-open');
         if (this.mode !== 'live') this.historyRows = (this.historyRows || []).map(c => c.id === result.id ? result : c);
-        this.renderContext(); this.renderWork(true); this.renderList(); this.metrics(); await this.updateRecovery(); return result;
-      } catch (error) { if (!error.uncertain) this.pending.delete(signature); else if(this.$('recover'))this.$('recover').hidden=false; throw error; }
+        this.renderContext(); this.renderWork(true); this.renderList(); this.metrics(); return result;
+      } catch (error) { if (!error.uncertain) this.pending.delete(signature); throw error; }
       finally { this.resume(); }
     }
     async take(onProgress) { if(this.role==='central'&&!this.$('person').value)return this.toast('Seleccione personal activo antes de continuar',true); const c = this.selected;if(onProgress)onProgress('Guardando…');if (!c.version) await this.command('create',{...c,caseId:c.caseId || (c.caseId=D.month(new Date())+'_'+S.uid())},c,onProgress); else await this.command('take',{},c,onProgress); this.renderWork(); this.toast('Atención iniciada'); }
