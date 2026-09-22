@@ -9,7 +9,157 @@
   const channelLabel = value => value==='Drive'?'Geotab Drive':value;
   const bytes = value => Number(value)>=1000000?(Number(value)/1000000).toFixed(1)+' MB':Math.max(1,Math.ceil(Number(value||0)/1000))+' KB';
   class ArdepeUI {
-    constructor(role) { this.role = role; this.cases = []; this.events = []; this.page = 0; this.origin = role === 'central' ? 'GEOTAB' : 'ALL'; this.selected = null; this.mode = 'live'; this.pending = new Map(); }
+    constructor(role) { this.role = role; this.cases = []; this.events = []; this.page = 0; this.origin = role === 'central' ? 'GEOTAB' : 'NEW'; this.selected = null; this.mode = 'live'; this.pending = new Map(); this.lastMarker = ''; this.activeUntil = 0; this.lastFullRefresh = 0; this.summaryMode = false; }
+    // "Modo activo": tras enviar algo o abrir un caso, consulta más seguido durante 2 minutos.
+    noteActivity() { this.activeUntil = Date.now() + 120000; }
+    // --- Resumen: estado propio, separado de la cola de casos normal ---
+    enterSummary() {
+      if (this.role !== 'central' || !this.clearSelection()) return;
+      this.summaryMode = true; this.summaryData = null;
+      this.$('create').hidden = true; if (this.$('summary-back')) this.$('summary-back').hidden = false;
+      this.$('summary').classList.add('active');
+      ['queue-panel','context-panel','management-panel'].forEach(cls => { const el = document.querySelector('.' + cls); if (el) el.hidden = true; });
+      this.$('summary-panel').hidden = false;
+      this.updateRecovery();
+      this.renderSummaryHint();
+    }
+    exitSummary() {
+      this.summaryMode = false; this.summaryData = null;
+      this.$('create').hidden = false; if (this.$('summary-back')) this.$('summary-back').hidden = true;
+      this.$('summary').classList.remove('active');
+      ['queue-panel','context-panel','management-panel'].forEach(cls => { const el = document.querySelector('.' + cls); if (el) el.hidden = false; });
+      this.$('summary-panel').hidden = true;
+      this.updateRecovery();
+    }
+    renderSummaryHint() {
+      this.$('summary-content').innerHTML = '<div class="empty"><strong>Seleccione un período en Histórico para ver el resumen.</strong>Elija Hoy, Ayer, Últimos 7 días, o un rango de fechas, y pulse Consultar.</div>';
+    }
+    async loadSummaryData(from, to, periodLabel) {
+      this.$('summary-content').innerHTML = '<div class="empty"><span class="spinner"></span>Consultando…</div>';
+      try {
+        let cases = [], token = '';
+        do { const r = await this.service.history(from, to, token); cases = cases.concat(r.cases); token = r.nextPageToken || ''; } while (token);
+        this.summaryData = { from, to, periodLabel, cases, filters: {} };
+        // La tendencia de 6 meses se carga una sola vez por sesión de Resumen (no en cada filtro),
+        // y usa el mismo conjunto de filtros al momento de dibujarla.
+        if (!this.summaryTrendCases) {
+          const trendTo = new Date(), trendFrom = new Date(trendTo.getFullYear(), trendTo.getMonth() - 5, 1);
+          let trendCases = [], t2 = '';
+          try { do { const r = await this.service.history(trendFrom.toISOString(), trendTo.toISOString(), t2); trendCases = trendCases.concat(r.cases); t2 = r.nextPageToken || ''; } while (t2); } catch (_) {}
+          this.summaryTrendCases = trendCases;
+        }
+        this.renderSummaryDashboard();
+      } catch (error) { this.$('summary-content').innerHTML = '<div class="empty">' + esc(error.message) + '</div>'; }
+    }
+    summaryFilterLabel(filters) {
+      const parts = [];
+      if (filters.driverId) { const c = this.summaryData.cases.find(c => c.driverId === filters.driverId); if (c) parts.push('Conductor: ' + c.driverName); }
+      if (filters.plate) parts.push('Vehículo: ' + filters.plate);
+      if (filters.type) parts.push('Tipo: ' + filters.type);
+      if (filters.cause) parts.push('Causa: ' + filters.cause);
+      if (filters.result) parts.push('Resultado: ' + filters.result);
+      return parts.join(' · ');
+    }
+    renderSummaryDashboard() {
+      const R = window.ArdepeResumen, data = this.summaryData; if (!data || !R) return;
+      const cases = R.applyFilters(data.cases, data.filters);
+      const trendCases = R.applyFilters(this.summaryTrendCases || [], data.filters);
+      const rules = this.rules || [];
+      const t = R.totals(cases);
+      const driverNames = [...new Map(data.cases.filter(c => c.driverId).map(c => [c.driverId, c.driverName || c.driverId])).entries()];
+      const plates = [...new Set(data.cases.map(c => c.plate).filter(Boolean))].sort();
+      const groupOptions = { type: ['Tipo', D.TYPES], cause: ['Causa', D.CAUSES], result: ['Resultado', D.RESULTS] };
+      const groupField = this.summaryGroup || 'type';
+      const groupRows = groupField === 'type' ? R.countBy(cases, 'type') : groupField === 'cause' ? R.countBy(cases, 'cause') : R.countBy(cases, 'result');
+      const html =
+        '<div class="filter-row" style="flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px">' +
+        '<label>Conductor<input id="a-sf-driver" list="a-sf-driver-list" placeholder="Todos" value="' + esc(data.filters.driverId ? (driverNames.find(d=>d[0]===data.filters.driverId)||[,''])[1] : '') + '"><datalist id="a-sf-driver-list">' + driverNames.map(d => '<option value="' + esc(d[1]) + '">').join('') + '</datalist></label>' +
+        '<label>Vehículo<input id="a-sf-plate" list="a-sf-plate-list" placeholder="Todos" value="' + esc(data.filters.plate || '') + '"><datalist id="a-sf-plate-list">' + plates.map(p => '<option value="' + esc(p) + '">').join('') + '</datalist></label>' +
+        '<label>Tipo<select id="a-sf-type"><option value="">Todos</option>' + D.TYPES.map(x => '<option' + (data.filters.type === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
+        '<label>Causa<select id="a-sf-cause"><option value="">Todas</option>' + D.CAUSES.map(x => '<option' + (data.filters.cause === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
+        '<label>Resultado<select id="a-sf-result"><option value="">Todos</option>' + D.RESULTS.map(x => '<option' + (data.filters.result === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>' +
+        '<button id="a-sf-apply" class="primary">Aplicar</button><button id="a-sf-clear">Limpiar filtros</button>' +
+        '</div>' +
+        '<div class="export-row" style="display:flex;gap:10px;margin-bottom:14px">' +
+        '<button id="a-sf-pdf">Exportar PDF</button><button id="a-sf-xlsx">Exportar Excel</button>' +
+        '<small class="muted" style="align-self:center">' + esc(data.periodLabel) + (this.summaryFilterLabel(data.filters) ? ' · ' + esc(this.summaryFilterLabel(data.filters)) : '') + '</small>' +
+        '</div>' +
+        '<div class="totals" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">' +
+        ['Total de casos,' + t.total, 'Finalizados,' + t.done + ' / ' + t.total, 'Activos,' + t.active, 'Prom. hasta iniciar,' + t.avgStart + ' min', 'Prom. hasta finalizar,' + t.avgClose + ' min'].map(pair => { const [l,v] = pair.split(','); return '<div class="metric"><small>' + l + '</small><strong>' + v + '</strong></div>'; }).join('') +
+        '</div>' +
+        '<div class="grid" style="display:flex;flex-wrap:wrap;gap:16px">' +
+        this.summaryCard('sf-group', 'Casos por tipo, causa o resultado', '<select id="a-sf-group-sel">' + Object.entries(groupOptions).map(([k,v]) => '<option value="' + k + '"' + (groupField === k ? ' selected' : '') + '>Por ' + v[0].toLowerCase() + '</option>').join('') + '</select>', groupRows.length ? R.barChartSVG(groupRows) : '<p class="muted" style="padding:16px">Sin registros</p>') +
+        this.summaryCard('sf-priority', 'Tiempo promedio de cierre por prioridad (min)', '', (() => { const rows = R.avgCloseByPriority(cases).filter(r=>cases.some(c=>c.priority===r[0])); return rows.length ? R.barChartSVG(rows) : '<p class="muted" style="padding:16px">Sin registros</p>'; })()) +
+        this.summaryCard('sf-trend', 'Tendencia mensual · últimos 6 meses', '', (() => { const rows = this.summaryMonthlyRows(trendCases); return rows.length ? R.barChartSVG(rows) : '<p class="muted" style="padding:16px">Sin registros</p>'; })()) +
+        this.summaryCard('sf-driver-table', 'Por conductor', '', R.tableHTML(R.countBy(cases, 'driverName'), ['Conductor','Casos'])) +
+        this.summaryCard('sf-plate-table', 'Por vehículo', '', R.tableHTML(R.countBy(cases, 'plate'), ['Vehículo','Casos'])) +
+        this.summaryCard('sf-rule-table', 'Por regla de Geotab', '', R.tableHTML(R.countByRule(cases, rules), ['Regla','Casos'])) +
+        '</div>';
+      this.$('summary-content').innerHTML = html;
+      const driverMap = new Map(driverNames.map(d => [d[1], d[0]]));
+      this.$('sf-apply').onclick = () => {
+        const driverText = this.$('sf-driver').value.trim(), plateText = this.$('sf-plate').value.trim();
+        data.filters = {
+          driverId: driverText ? (driverMap.get(driverText) || '') : '',
+          plate: plateText || '',
+          type: this.$('sf-type').value || '', cause: this.$('sf-cause').value || '', result: this.$('sf-result').value || '',
+        };
+        this.renderSummaryDashboard();
+      };
+      this.$('sf-clear').onclick = () => { data.filters = {}; this.renderSummaryDashboard(); };
+      this.$('sf-group-sel').onchange = () => { this.summaryGroup = this.$('sf-group-sel').value; this.renderSummaryDashboard(); };
+      this.$('sf-pdf').onclick = () => this.run(this.$('sf-pdf'), () => this.exportSummaryPDF(cases, trendCases, rules, data));
+      this.$('sf-xlsx').onclick = () => this.run(this.$('sf-xlsx'), () => this.exportSummaryExcel(cases, trendCases, rules, data));
+    }
+    summaryCard(id, title, control, bodyHtml) {
+      return '<div style="width:480px;height:340px;background:#fff;border:1px solid var(--line);border-radius:6px;display:flex;flex-direction:column;overflow:hidden">' +
+        '<header style="padding:12px 14px 8px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex:none"><h3 style="margin:0;font-size:13px">' + esc(title) + '</h3>' + control + '</header>' +
+        '<div id="a-' + id + '" style="flex:1;overflow:auto;padding:0 14px 14px">' + bodyHtml + '</div></div>';
+    }
+    summaryMonthlyRows(cases) {
+      const now = new Date(), map = new Map();
+      for (let i = 5; i >= 0; i--) { const d = new Date(now.getFullYear(), now.getMonth() - i, 1); map.set(d.toISOString().slice(0,7), d.toLocaleDateString('es-PE', { month:'short', year:'2-digit' })); }
+      const counts = new Map([...map.keys()].map(k => [k, 0]));
+      cases.forEach(c => { const key = String(c.occurredAt).slice(0,7); if (counts.has(key)) counts.set(key, counts.get(key) + 1); });
+      return [...map.keys()].map(k => [map.get(k), counts.get(k)]);
+    }
+    async exportSummaryPDF(cases, trendCases, rules, data) {
+      const R = window.ArdepeResumen, t = R.totals(cases);
+      const groupField = this.summaryGroup || 'type';
+      const bytes = await R.exportPDF({
+        periodLabel: data.periodLabel, filterLabel: this.summaryFilterLabel(data.filters), totals: t,
+        sections: [
+          { title: 'Por ' + groupField, rows: groupField === 'type' ? R.countBy(cases,'type') : groupField === 'cause' ? R.countBy(cases,'cause') : R.countBy(cases,'result') },
+          { title: 'Tiempo promedio de cierre por prioridad (min)', rows: R.avgCloseByPriority(cases).filter(r=>cases.some(c=>c.priority===r[0])) },
+          { title: 'Tendencia mensual (6 meses)', rows: this.summaryMonthlyRows(trendCases) },
+          { title: 'Por conductor', rows: R.countBy(cases,'driverName') },
+          { title: 'Por vehículo', rows: R.countBy(cases,'plate') },
+          { title: 'Por regla de Geotab', rows: R.countByRule(cases, rules) },
+        ]
+      });
+      if (!cases.length) throw new Error('No hay datos para exportar con estos filtros');
+      const url = URL.createObjectURL(new Blob([bytes],{type:'application/pdf'})), link = document.createElement('a');
+      link.href=url;link.download='ARDEPE_resumen_'+D.limaDay(new Date())+'.pdf';link.hidden=true;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+      this.toast('PDF generado');
+    }
+    async exportSummaryExcel(cases, trendCases, rules, data) {
+      const R = window.ArdepeResumen;
+      if (!cases.length) throw new Error('No hay datos para exportar con estos filtros');
+      const groupField = this.summaryGroup || 'type';
+      const bytes = await R.exportExcel([
+        { name: 'Resumen', headers: ['Período','Filtros','Total','Finalizados','Activos'], rows: [[data.periodLabel, this.summaryFilterLabel(data.filters)||'Ninguno', cases.length, cases.filter(c=>c.status==='FINALIZADA').length, cases.filter(c=>c.status!=='FINALIZADA').length]] },
+        { name: 'Por ' + groupField, headers: [groupField==='type'?'Tipo':groupField==='cause'?'Causa':'Resultado','Casos'], rows: groupField==='type'?R.countBy(cases,'type'):groupField==='cause'?R.countBy(cases,'cause'):R.countBy(cases,'result') },
+        { name: 'Cierre por prioridad', headers: ['Prioridad','Minutos promedio'], rows: R.avgCloseByPriority(cases).filter(r=>cases.some(c=>c.priority===r[0])) },
+        { name: 'Tendencia 6 meses', headers: ['Mes','Casos'], rows: this.summaryMonthlyRows(trendCases) },
+        { name: 'Por conductor', headers: ['Conductor','Casos'], rows: R.countBy(cases,'driverName') },
+        { name: 'Por vehículo', headers: ['Vehículo','Casos'], rows: R.countBy(cases,'plate') },
+        { name: 'Por regla Geotab', headers: ['Regla','Casos'], rows: R.countByRule(cases, rules) },
+      ]);
+      if (!bytes) throw new Error('No hay datos para exportar con estos filtros');
+      const url = URL.createObjectURL(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'})), link = document.createElement('a');
+      link.href=url;link.download='ARDEPE_resumen_'+D.limaDay(new Date())+'.xlsx';link.hidden=true;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+      this.toast('Excel generado');
+    }
     $(id) { return document.getElementById('a-' + id); }
     async mount(api) {
       this.pause(); this.stopBackgroundNotifications(); this.api = api;
@@ -30,7 +180,17 @@
     }
     async checkDriverNotifications(service) {
       if(!service||this.notificationChecking)return;this.notificationChecking=true;
-      try{const data=await service.bootstrap(),unread=(data.cases||[]).filter(c=>c.lastCentralMessageAt>(c.readByDriverAt||'')).length;if(unread){const latest=(data.cases||[]).map(c=>c.lastCentralMessageAt||'').sort().pop();await service.notify('Central ARDEPE',unread===1?'Tiene una solicitud nueva de Monitoreo':'Tiene '+unread+' solicitudes nuevas de Monitoreo',latest);}}finally{this.notificationChecking=false;}
+      try{
+        // Antes de la consulta completa, se pregunta la marca liviana: si no cambió desde la
+        // última vez, no hace falta traer todos los casos solo para revisar si hay algo nuevo.
+        if(typeof service.marker==='function'){
+          let marker='';
+          try{marker=await service.marker();}catch(_){marker=this.lastBackgroundMarker===undefined?'':undefined;}
+          if(marker===this.lastBackgroundMarker)return;
+          this.lastBackgroundMarker=marker;
+        }
+        const data=await service.bootstrap(),unread=(data.cases||[]).filter(c=>c.lastCentralMessageAt>(c.readByDriverAt||'')).length;if(unread){const latest=(data.cases||[]).map(c=>c.lastCentralMessageAt||'').sort().pop();await service.notify('Central ARDEPE',unread===1?'Tiene una solicitud nueva de Monitoreo':'Tiene '+unread+' solicitudes nuevas de Monitoreo',latest);}
+      }finally{this.notificationChecking=false;}
     }
     startBackgroundNotifications(service) { this.stopBackgroundNotifications();if(!service||this.role!=='driver')return;this.notificationTimer=setInterval(()=>this.checkDriverNotifications(service).catch(()=>{}),15000); }
     stopBackgroundNotifications() { clearInterval(this.notificationTimer);this.notificationTimer=null; }
@@ -39,19 +199,20 @@
       const logo = 'https://daniel-torres-create.github.io/SOFTWARE-CENTRAL-MONITOREO/public/assets/logo.png?v=20260919-2';
       const actions = driver
         ? '<div class="commandbar driver-actions"><select id="a-person" hidden><option value=""></option></select><button id="a-create" class="primary"><span class="action-icon">＋</span><span>Reportar</span></button><button id="a-history"><span class="action-icon">▤</span><span>Historial</span></button><button id="a-guide"><span class="action-icon">?</span><span>Ayuda</span></button><button id="a-recover"><span class="action-icon">↻</span><span>Reintentar envío pendiente</span></button></div>'
-        : '<div class="commandbar"><div class="operator"><label>Personal activo<select id="a-person"><option value="">Seleccione personal</option></select></label></div><button id="a-history">Histórico</button><button id="a-create" class="primary">Crear caso</button><button id="a-recover">Reintentar envío pendiente</button><button id="a-guide">Guía</button><button id="a-admin" aria-label="Administración">⚙</button></div>';
-      const tabs = (driver ? [['ALL','Pendientes'],['NEW','Sin leer'],['DONE','Finalizados']] : [['GEOTAB','Alertas Geotab'],['CENTRAL','Solicitudes de Central'],['CONDUCTOR','Reportes del conductor']]).map(([id,label]) => '<button data-origin="' + id + '" class="' + (id === this.origin ? 'active' : '') + '">' + label + '<span class="tab-count" data-origin-count="'+id+'"></span></button>').join('');
+        : '<div class="commandbar"><div class="operator"><label>Personal activo<select id="a-person"><option value="">Seleccione personal</option></select></label></div><button id="a-history">Histórico</button><button id="a-create" class="primary">Crear caso</button><button id="a-summary-back" hidden>Volver al panel</button><button id="a-recover">Reintentar envío pendiente</button><button id="a-guide">Guía</button><button id="a-admin" aria-label="Administración">⚙</button></div>';
+      const tabs = (driver ? [['NEW','Nuevos'],['ACTIVE','En curso'],['DONE','Finalizados']] : [['GEOTAB','Alertas Geotab'],['CENTRAL','Solicitudes de Central'],['CONDUCTOR','Reportes del conductor']]).map(([id,label]) => '<button data-origin="' + id + '" class="' + (id === this.origin ? 'active' : '') + '">' + label + '<span class="tab-count" data-origin-count="'+id+'"></span></button>').join('');
       const filters = driver
         ? '<section class="filters driver-filters"><nav class="tabs" id="a-tabs" aria-label="Casos">' + tabs + '</nav><details class="filter-disclosure"><summary>Buscar y filtrar</summary><div class="filter-row"><select id="a-state" aria-label="Estado"><option value="ALL">Todos los estados activos</option><option value="OLD">Pendientes anteriores</option>' + Object.entries(D.STATES).map(([id,label]) => '<option value="' + id + '">' + label + '</option>').join('') + '</select><select id="a-priority" aria-label="Prioridad"><option value="ALL">Todas las prioridades</option>' + options(D.PRIORITIES) + '</select><input id="a-search" type="search" placeholder="Buscar vehículo o motivo" aria-label="Buscar casos"><button id="a-refresh">Actualizar</button></div></details></section>'
-        : '<section class="filters"><nav class="tabs" id="a-tabs" aria-label="Origen">' + tabs + '</nav><div class="filter-row central-filter-row"><select id="a-rule" aria-label="Tipo de alerta"><option value="ALL">Todas las alertas Geotab</option></select><select id="a-state" aria-label="Estado"><option value="ALL">Todos los estados activos</option><option value="OLD">Pendientes anteriores</option>' + Object.entries(D.STATES).map(([id,label]) => '<option value="' + id + '">' + label + '</option>').join('') + '</select><select id="a-priority" aria-label="Prioridad"><option value="ALL">Todas las prioridades</option>' + options(D.PRIORITIES) + '</select><input id="a-search" type="search" placeholder="Buscar placa, conductor o motivo" aria-label="Buscar casos"><button id="a-refresh">Actualizar</button></div></section>';
+        : '<section class="filters"><nav class="tabs" id="a-tabs" aria-label="Origen">' + tabs + '<button id="a-summary" style="margin-left:auto">Resumen</button></nav><div class="filter-row central-filter-row"><select id="a-rule" aria-label="Tipo de alerta"><option value="ALL">Todas las alertas Geotab</option></select><select id="a-state" aria-label="Estado"><option value="ALL">Todos los estados activos</option><option value="OLD">Pendientes anteriores</option>' + Object.entries(D.STATES).map(([id,label]) => '<option value="' + id + '">' + label + '</option>').join('') + '</select><select id="a-priority" aria-label="Prioridad"><option value="ALL">Todas las prioridades</option>' + options(D.PRIORITIES) + '</select><input id="a-search" type="search" placeholder="Buscar placa, conductor o motivo" aria-label="Buscar casos"><button id="a-refresh">Actualizar</button></div></section>';
       return '<div class="shell ' + (driver ? 'driver-shell' : '') + '">' +
         '<header class="topbar"><img class="logo" src="' + logo + '" alt="ARDEPE SAC"><div class="title"><h1>' + (driver ? 'Mis atenciones' : 'Central Integral de Monitoreo') + '</h1><p>ARDEPE · Seguridad vial</p></div>'+(driver?'<button id="a-drive-back" class="drive-back" aria-label="Volver al panel de Geotab Drive" title="Volver a Geotab Drive">←</button>':'')+'<div class="identity"><span id="a-connection" class="connection">Preparando conexión</span><div id="a-identity" class="muted"></div></div></header>' +
         (this.demo ? '<div class="demo-banner"><strong>DEMOSTRACIÓN LOCAL</strong><span>Datos simulados. No envía información real.</span><a target="_blank" href="' + (driver ? 'centralArdepe' : 'conductorArdepe') + '.html?demo=1">Abrir ' + (driver ? 'Central' : 'vista del conductor') + '</a></div>' : '') +
         actions +
         '<section class="metrics" id="a-metrics" aria-label="Resumen"></section>' +
+        (driver ? '' : '<div id="a-limits-banner"></div>') +
         filters +
         '<div id="a-history-banner" class="history-banner" hidden><span id="a-history-label"></span><button id="a-live">Volver a activos</button><button id="a-export-all">Exportar consulta</button></div>' +
-        '<main class="workspace"><aside class="panel queue-panel"><header class="panel-heading"><h2 id="a-queue-title">' + (driver ? 'Tus atenciones' : 'Cola de atención') + '</h2><small id="a-count">0 casos</small></header><div class="scroll" id="a-list"><div class="empty"><span class="spinner"></span>Consultando…</div></div><div class="pager"><button id="a-prev" aria-label="Página anterior">Anterior</button><span id="a-page"></span><button id="a-next">Siguiente</button></div></aside><section class="panel context-panel"><header class="panel-heading"><h2>Detalle del caso</h2><span class="panel-heading-actions"><span>Información operativa</span><button class="close-view" data-close-view hidden aria-label="Cerrar detalle" title="Cerrar vista">×</button></span></header><div id="a-context" class="scroll"><div class="empty">Seleccione un caso para revisar su contexto.</div></div></section><section class="panel management-panel"><header class="panel-heading"><h2>' + (driver ? 'Detalle y conversación' : 'Atención y conversación') + '</h2><span class="panel-heading-actions"><small id="a-manager"></small><button class="close-view" data-close-view hidden aria-label="Cerrar detalle y conversación" title="Cerrar vista">×</button></span></header><div id="a-work" class="scroll">' + (driver ? '<div class="empty"><strong>Seleccione una atención</strong>Aquí podrá revisar el detalle, conversar y adjuntar evidencias.</div>' : '<div class="operation-start"><h3>Ruta de atención</h3><ol><li><span>1</span>Validar evento y conductor</li><li><span>2</span>Elegir canal de contacto</li><li><span>3</span>Evaluar respuesta y causa</li><li><span>4</span>Registrar acciones y seguimiento</li><li><span>5</span>Finalizar con expediente completo</li></ol><p>Seleccione un caso de la cola o use <b>Crear caso</b> para comenzar.</p></div>') + '</div></section></main></div>' +
+        '<main class="workspace"><aside class="panel queue-panel"><header class="panel-heading"><h2 id="a-queue-title">' + (driver ? 'Tus atenciones' : 'Cola de atención') + '</h2><small id="a-count">0 casos</small></header><div class="scroll" id="a-list"><div class="empty"><span class="spinner"></span>Consultando…</div></div><div class="pager"><button id="a-prev" aria-label="Página anterior">Anterior</button><span id="a-page"></span><button id="a-next">Siguiente</button></div></aside><section class="panel context-panel"><header class="panel-heading"><h2>Detalle del caso</h2><span class="panel-heading-actions"><span>Información operativa</span><button class="close-view" data-close-view hidden aria-label="Cerrar detalle" title="Cerrar vista">×</button></span></header><div id="a-context" class="scroll"><div class="empty">Seleccione un caso para revisar su contexto.</div></div></section><section class="panel management-panel"><header class="panel-heading"><h2>' + (driver ? 'Detalle y conversación' : 'Atención y conversación') + '</h2><span class="panel-heading-actions"><small id="a-manager"></small><button class="close-view" data-close-view hidden aria-label="Cerrar detalle y conversación" title="Cerrar vista">×</button></span></header><div id="a-work" class="scroll">' + (driver ? '<div class="empty"><strong>Seleccione una atención</strong>Aquí podrá revisar el detalle, conversar y adjuntar evidencias.</div>' : '<div class="operation-start"><h3>Ruta de atención</h3><ol><li><span>1</span>Validar evento y conductor</li><li><span>2</span>Elegir canal de contacto</li><li><span>3</span>Evaluar respuesta y causa</li><li><span>4</span>Registrar acciones y seguimiento</li><li><span>5</span>Finalizar con expediente completo</li></ol><p>Seleccione un caso de la cola o use <b>Crear caso</b> para comenzar.</p></div>') + '</div></section>' + (driver ? '' : '<section class="panel" id="a-summary-panel" hidden style="grid-column:1/-1"><div id="a-summary-content" class="scroll"></div></section>') + '</main></div>' +
         '<dialog id="a-dialog" class="modal"><header><h2 id="a-dialog-title"></h2><button id="a-close" aria-label="Cerrar">×</button></header><div id="a-dialog-body" class="body"></div></dialog><div id="a-toast" class="toast" role="status" hidden></div><div id="a-print" class="print-view"></div>';
     }
     bind() {
@@ -67,12 +228,14 @@
       };
       this.$('close').onclick = () => { this.$('dialog').close();this.clearEvidenceUrl(); };
       this.$('create').onclick = () => this.createDialog(); this.$('history').onclick = () => this.historyDialog();
-      this.$('live').onclick = () => { if(!this.clearSelection())return;this.mode = 'live'; this.$('history-banner').hidden = true; this.$('state').value = 'ALL'; if(this.role==='central'&&this.origin==='ALL')this.origin='GEOTAB';this.$('tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.origin===this.origin));this.refresh().catch(e => this.toast(e.message, true)); };
+      if (this.$('summary')) this.$('summary').onclick = () => this.enterSummary();
+      if (this.$('summary-back')) this.$('summary-back').onclick = () => this.exitSummary();
+      this.$('live').onclick = () => { if(!this.clearSelection())return;this.mode = 'live'; this.$('history-banner').hidden = true; this.$('state').value = 'ALL'; if(this.role==='central'&&this.origin==='ALL')this.origin='GEOTAB';if(this.role==='driver'&&this.origin==='ALL')this.origin='NEW';this.$('tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.origin===this.origin));this.refresh().catch(e => this.toast(e.message, true)); };
       this.$('recover').hidden=true;
       this.$('recover').onclick=()=>this.run(this.$('recover'),async()=>{if(!this.service.recoverPending)throw new Error('Conecte Geotab primero');const result=await this.service.recoverPending();this.pending.clear();this.selected=result;await this.refresh();this.renderContext();this.renderWork();this.toast('Envío pendiente confirmado');});
       this.$('guide').onclick = () => this.guide();
       if (this.$('drive-back')) this.$('drive-back').onclick = () => this.goDriveHome();
-      this.$('export-all').onclick = () => this.run(this.$('export-all'), () => this.exportCases(this.filtered().filter(c => c.version)));
+      this.$('export-all').onclick = () => this.run(this.$('export-all'), stage => this.exportCases(this.filtered().filter(c => c.version), stage));
       if (this.$('admin')) this.$('admin').onclick = () => this.adminDialog();
       document.querySelectorAll('#ardepe-root [data-close-view]').forEach(button=>button.onclick=()=>this.clearSelection());
     }
@@ -80,16 +243,34 @@
     hideToast(){clearTimeout(this.toastTimer);const toast=this.$('toast');if(toast){toast.hidden=true;toast.textContent='';toast.className='toast';}}
     toast(message, error) { this.hideToast();const toast=this.$('toast');toast.textContent=message;toast.className='toast' + (error ? ' error' : '');toast.hidden=false;this.toastTimer=setTimeout(()=>this.hideToast(),4000); }
     async run(button, fn) { if (button.disabled) return; const html = button.innerHTML,stage=label=>{if(button.isConnected)button.innerHTML='<span class="spinner"></span>'+label;};button.disabled=true;stage('Procesando…');try{await fn(stage);}catch(error){this.toast(error.message,true);}finally{if(button.isConnected){button.disabled=false;button.innerHTML=html;}} }
-    pause() { clearInterval(this.timer); clearInterval(this.clock); }
+    pause() { clearTimeout(this.timer); clearInterval(this.clock); }
     focus() { this.hideToast();this.stopBackgroundNotifications();this.resume(); }
     blur() { this.hideToast();this.pause();if(this.role==='driver'&&this.service&&!this.demo)this.startBackgroundNotifications(this.service); }
-    resume() { if (!this.mounted || !this.service) return; this.pause(); this.timer = setInterval(() => { if (this.mode === 'live') this.refresh().catch(e => this.status(e.message, true)); }, 5000); this.clock = setInterval(() => this.tick(), 1000); }
+    resume() { if (!this.mounted || !this.service) return; this.pause(); this.scheduleCheck(); this.clock = setInterval(() => this.tick(), 1000); }
+    // En vez de un intervalo fijo, se reprograma cada vez con el tiempo que toque: más seguido en
+    // modo activo (tras enviar o abrir algo) o mientras se muestra un caso, más espaciado el resto
+    // del tiempo. Antes de cada consulta completa se pregunta primero la marca liviana; solo se
+    // repite la consulta completa si la marca cambió, o cada 60 s de todas formas como red de
+    // seguridad (por si la marca se perdiera de la memoria del servidor).
+    scheduleCheck() {
+      const active = Date.now() < this.activeUntil || Boolean(this.selected);
+      const interval = active ? 3000 : (this.role === 'central' ? 5000 : 15000);
+      this.timer = setTimeout(() => { if (this.mode === 'live') this.checkForChanges().catch(e => this.status(e.message, true)).finally(() => this.scheduleCheck()); else this.scheduleCheck(); }, interval);
+    }
+    async checkForChanges() {
+      if (!this.service || this.refreshing) return;
+      if (typeof this.service.marker !== 'function') { await this.refresh(); return; }
+      const safetyNet = Date.now() - this.lastFullRefresh > 60000;
+      let marker = this.lastMarker;
+      try { marker = await this.service.marker(); } catch (_) { /* si falla, la red de seguridad igual refresca */ }
+      if (safetyNet || marker !== this.lastMarker) { this.lastMarker = marker; await this.refresh(); }
+    }
     async refresh() {
       if (!this.service || this.refreshing || this.mode !== 'live') return;
-      this.refreshing = true; this.status('Actualizando…');
+      this.refreshing = true; this.lastFullRefresh = Date.now(); this.status('Actualizando…');
       try {
         const previousUnread=this.role==='driver'?this.cases.filter(c=>this.unread(c)).length:0;
-        const data = await this.service.bootstrap(); this.people = data.personnel || []; this.rules = data.rules || []; this.cases = data.cases || []; this.events = data.events || []; this.updateRuleFilter(true);
+        const queryStart = Date.now(); const data = await this.service.bootstrap(); this.queryMs = Date.now() - queryStart; this.people = data.personnel || []; this.rules = data.rules || []; this.cases = data.cases || []; this.events = data.events || []; this.limits = data.limits || null; this.updateRuleFilter(true);
         const unreadNow=this.role==='driver'?this.cases.filter(c=>this.unread(c)).length:0;
         if(this.role==='driver'&&unreadNow>previousUnread&&previousUnread>=0){const latest=this.cases.map(c=>c.lastCentralMessageAt||'').sort().pop();this.service.notify('Central ARDEPE',unreadNow===1?'Tiene una solicitud nueva de Monitoreo':'Tiene '+unreadNow+' solicitudes nuevas de Monitoreo',latest);}
         this.$('identity').textContent = this.role === 'driver' ? data.actor.name : 'Hora operativa · Lima';
@@ -97,7 +278,7 @@
         this.$('person').innerHTML = '<option value="">Seleccione personal</option>' + this.people.filter(p => p.active).map(p => '<option value="' + esc(p.id) + '">' + esc(p.name + ' · ' + p.area) + '</option>').join('');
         if (this.people.some(p => p.active && p.id === old)) this.$('person').value = old;
         if (this.demo && !this.$('person').value) this.$('person').value = 'demo-operator';
-        this.renderList(); this.metrics();
+        this.renderList(); this.metrics(); this.renderLimits();
         if (this.selected && this.selected.version) {
           const fresh = this.cases.find(c => c.id === this.selected.id);
           if (fresh && fresh.version !== this.selected.version) { this.selected = fresh;if(!this.hasDraft()){this.renderContext();this.renderWork(true);} }
@@ -108,7 +289,7 @@
     }
     async updateRecovery() {
       if (!this.$('recover') || this.demo || !this.service || !this.service.pendingCommand) return;
-      this.$('recover').hidden = !(await this.service.pendingCommand());
+      this.$('recover').hidden = this.summaryMode || !(await this.service.pendingCommand());
     }
     goDriveHome() {
       const mobile=this.api&&this.api.mobile,navigate=mobile&&mobile.navigate;
@@ -135,9 +316,12 @@
       const rule = this.$('rule') ? this.$('rule').value : 'ALL', state = this.$('state').value, priority = this.$('priority').value, query = this.$('search').value.toLocaleLowerCase(), today = D.limaDay(new Date());
       return this.all().filter(c => {
         if (this.role === 'driver' && c.driverId !== this.service.actor.id) return false;
-        if (this.origin === 'DONE' && c.status !== 'FINALIZADA') return false;
-        if (this.origin === 'NEW' && !this.unread(c)) return false;
-        if (!['ALL','DONE','NEW'].includes(this.origin) && c.origin !== this.origin) return false;
+        if (this.role === 'driver') { if (this.origin !== 'ALL' && this.driverBucket(c) !== this.origin) return false; }
+        else {
+          if (this.origin === 'DONE' && c.status !== 'FINALIZADA') return false;
+          if (this.origin === 'NEW' && !this.unread(c)) return false;
+          if (!['ALL','DONE','NEW'].includes(this.origin) && c.origin !== this.origin) return false;
+        }
         if (state === 'ALL' && this.mode === 'live' && this.origin !== 'DONE' && c.status === 'FINALIZADA') return false;
         if (state === 'OLD' && (c.status === 'FINALIZADA' || D.limaDay(c.occurredAt) >= today)) return false;
         if (!['ALL','OLD'].includes(state) && c.status !== state) return false;
@@ -147,6 +331,16 @@
       }).sort((a,b) => D.PRIORITIES.indexOf(a.priority) - D.PRIORITIES.indexOf(b.priority) || a.occurredAt.localeCompare(b.occurredAt));
     }
     unread(c) { return this.role === 'driver' ? c.lastCentralMessageAt > (c.readByDriverAt || '') : c.lastDriverMessageAt > (c.readByCentralAt || ''); }
+    // Pestañas del conductor: Nuevos = mensaje de Monitoreo que el conductor nunca abrió (un reporte
+    // propio del conductor nunca pasa por aquí). En curso = ya se abrió una vez, o lo reportó el
+    // conductor mismo; una vez aquí, no vuelve a Nuevos aunque llegue otro mensaje. Finalizados = cerrado.
+    driverBucket(c) { if (c.status === 'FINALIZADA') return 'DONE'; if (c.origin !== 'CONDUCTOR' && !c.readByDriverAt) return 'NEW'; return 'ACTIVE'; }
+    // Busca la regla asociada a un caso o evento (por el primer evento, o por ruleId directo para
+    // casos antiguos), para usar su nombre de dato personalizado si tiene uno ("Ralentí", etc.)
+    // en vez del genérico "Valor detectado". Si no encuentra la regla, usa el genérico de siempre.
+    measurementRule(c) { const ruleId = c.ruleId || (c.events && c.events[0] && c.events[0].ruleId); return ruleId ? (this.rules||[]).find(r => r.id === ruleId) : null; }
+    measurementLabel(c) { const rule = this.measurementRule(c); return (rule && rule.customLabel) || 'Valor detectado'; }
+    measurementText(c) { const rule = this.measurementRule(c); if (rule && rule.kind === 'none') return c.measurement ? 'Solo alerta' : 'No disponible'; return c.measurement && c.measurement.text || 'No disponible'; }
     hasDraft(){const work=this.$('work');if(!work)return false;return work.dataset.dirty==='1'||[...work.querySelectorAll('textarea')].some(el=>el.value.trim())||[...work.querySelectorAll('input[type=file]')].some(el=>el.files&&el.files.length);}
     clearSelection(force=false) {
       if(this.selected&&!force&&this.hasDraft()&&!window.confirm('Hay información sin enviar. ¿Desea cerrar la vista y descartarla?'))return false;
@@ -161,7 +355,7 @@
       this.$('count').textContent = rows.length + ' casos'; this.$('page').textContent = (this.page + 1) + ' / ' + pages;
       this.$('prev').disabled = this.page === 0; this.$('next').disabled = this.page >= pages - 1 && !(this.mode==='cases'&&this.historyNextToken);
       this.$('page').parentElement.hidden=pages<=1&&!(this.mode==='cases'&&this.historyNextToken);
-      const all=this.all(),active=c=>this.mode!=='live'||c.status!=='FINALIZADA';this.$('tabs').querySelectorAll('[data-origin-count]').forEach(node=>{const id=node.dataset.originCount;let count;if(id==='ALL')count=all.filter(c=>c.status!=='FINALIZADA').length;else if(id==='NEW')count=all.filter(c=>this.unread(c)&&c.status!=='FINALIZADA').length;else if(id==='DONE')count=all.filter(c=>c.status==='FINALIZADA').length;else count=all.filter(c=>c.origin===id&&active(c)).length;node.textContent=String(count);node.classList.toggle('attention',id==='NEW'&&count>0||this.role==='central'&&id==='CONDUCTOR'&&all.some(c=>c.origin==='CONDUCTOR'&&this.unread(c)));});
+      const all=this.all(),active=c=>this.mode!=='live'||c.status!=='FINALIZADA';this.$('tabs').querySelectorAll('[data-origin-count]').forEach(node=>{const id=node.dataset.originCount;let count;if(this.role==='driver')count=all.filter(c=>this.driverBucket(c)===id).length;else count=all.filter(c=>c.origin===id&&active(c)).length;node.textContent=String(count);node.classList.toggle('attention',this.role==='driver'&&id==='NEW'&&count>0||this.role==='central'&&id==='CONDUCTOR'&&all.some(c=>c.origin==='CONDUCTOR'&&this.unread(c)));});
       const ready = (this.people||[]).some(p=>p.active) && (this.rules||[]).some(r=>r.active);
       const empty = this.mode === 'live'
         ? (this.role === 'driver' ? '<div class="empty app-empty"><span class="empty-mark">✓</span><strong>Todo está al día</strong>No tienes solicitudes ni casos activos.<br>Usa <b>Reportar</b> si necesitas informar un incidente.</div>' : ready ? '<div class="empty app-empty"><span class="empty-mark">✓</span><strong>Sin casos en esta bandeja</strong>Revise las otras bandejas o use <b>Crear caso</b>.</div>' : '<div class="empty setup-empty"><strong>Complete la configuración inicial</strong><ol><li>Abra Administración.</li><li>Registre el personal de Monitoreo.</li><li>Registre y active las reglas Geotab.</li><li>Seleccione el personal activo y actualice la bandeja.</li></ol><span>Esta implementación inicia sin registros anteriores.</span></div>')
@@ -174,7 +368,32 @@
       const list = [ ['Por gestionar', open.filter(c => c.status === 'NUEVO').length], ['En atención', open.filter(c => c.status !== 'NUEVO').length], [this.role === 'driver' ? 'Sin leer' : 'Respuesta recibida', this.role === 'driver' ? rows.filter(c => this.unread(c)).length : rows.filter(c => c.status === 'RESPUESTA_RECIBIDA').length], ['Finalizadas hoy', rows.filter(c => c.finalizedAt && D.limaDay(c.finalizedAt) === D.limaDay(now)).length], ['Mayor tiempo activo', D.elapsed(open.reduce((m,c) => Math.max(m,D.seconds(c.occurredAt,now)),0))] ];
       this.$('metrics').innerHTML = list.slice(0,this.role === 'driver' ? 3 : 5).map(([label,value]) => '<div class="metric"><small>' + label + '</small><strong>' + value + '</strong></div>').join('');
     }
+    // Aviso de límites, solo para Central. Cada medición avisa en amarillo al 70% de su tope y en
+    // rojo al 90%. El amarillo se puede cerrar por esta sesión; el rojo no, y vuelve a aparecer si
+    // la medición sigue subiendo. Se apaga por completo desde Administración → Operación.
+    limitsConfig() {
+      return [
+        { key:'active', label:'Casos activos', value: this.limits && this.limits.activeCount, yellow:350, red:450, fmt:v=>v+' de 500' },
+        { key:'cells', label:'Celdas del archivo de control', value: this.limits && this.limits.controlCells, yellow:7000000, red:9000000, fmt:v=>(v/1000000).toFixed(1)+' de 10 millones' },
+        { key:'audit', label:'Filas de auditoría del mes', value: this.limits && this.limits.auditRows, yellow:35000, red:45000, fmt:v=>v+' de 50 000' },
+        { key:'query', label:'Tiempo de consulta', value: this.queryMs, yellow:10000, red:20000, fmt:v=>(v/1000).toFixed(1)+' s de 30 s' },
+      ];
+    }
+    renderLimits() {
+      const el = this.$('limits-banner'); if (!el) return;
+      this.dismissedLimits = this.dismissedLimits || new Set();
+      const rows = this.limitsConfig().filter(m => m.value != null).map(m => Object.assign({}, m, { level: m.value >= m.red ? 'red' : m.value >= m.yellow ? 'yellow' : null }))
+        .filter(m => m.level && !(m.level === 'yellow' && this.dismissedLimits.has(m.key)));
+      if (!rows.length) { el.innerHTML = ''; return; }
+      const worst = rows.some(r => r.level === 'red') ? 'red' : 'yellow';
+      const style = worst === 'red' ? 'background:#a72e26;color:#fff' : 'background:#fff4d8;color:#755719';
+      el.innerHTML = '<div style="' + style + ';padding:8px 18px;font-size:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap">' +
+        rows.map(r => '<span>' + esc(r.label) + ': ' + esc(r.fmt(r.value)) + '</span>').join('') +
+        (worst === 'yellow' ? '<button data-dismiss-limits style="margin-left:auto">Cerrar</button>' : '<strong style="margin-left:auto">Revise pronto</strong>') + '</div>';
+      if (worst === 'yellow') { const btn = el.querySelector('[data-dismiss-limits]'); if (btn) btn.onclick = () => { rows.forEach(r => this.dismissedLimits.add(r.key)); this.renderLimits(); }; }
+    }
     async select(item) {
+      this.noteActivity();
       this.selected = item; if (this.role === 'driver') document.querySelector('.driver-shell').classList.add('case-open'); this.renderList(); this.renderContext(); this.renderWork();
       document.querySelectorAll('#ardepe-root [data-close-view]').forEach(button=>button.hidden=false);
       if (item.version) {
@@ -196,7 +415,7 @@
     contextHTML(c, compact) {
       const coord = typeof c.latitude === 'number' && typeof c.longitude === 'number';
       const operational=c.origin==='GEOTAB'
-        ? '<div><dt>Valor detectado</dt><dd>'+esc(c.measurement&&c.measurement.text||'No disponible')+'</dd></div>'
+        ? '<div><dt>'+esc(this.measurementLabel(c))+'</dt><dd>'+esc(this.measurementText(c))+'</dd></div>'
         : '<div><dt>Tipo de reporte</dt><dd>'+esc(c.type||c.title||'No informado')+'</dd></div>';
       const reportDetails=c.origin==='GEOTAB'
         ? '<p class="section-label">Detalle del evento</p><p>'+esc(c.description||c.title||'Sin detalle')+'</p>'
@@ -204,7 +423,7 @@
       return '<div class="content"><div class="detail-badges">' + badge(c.status, D.STATES[c.status]) + '<span class="origin-chip '+esc(c.origin)+'">'+esc(originLabel(c.origin))+'</span></div><h2 class="detail-title">' + esc(c.title) + '</h2><small>' + date(c.occurredAt) + '</small><dl class="facts"><div><dt>Vehículo</dt><dd>' + esc(c.plate || 'Por confirmar') + '</dd></div>'+operational+'<div class="wide"><dt>Conductor</dt><dd>' + esc(c.driverName || 'Por confirmar') + '</dd></div><div class="wide"><dt>Ubicación</dt><dd>' + esc(c.location || 'No disponible') + '</dd></div><div class="wide"><dt>Personal asignado</dt><dd>' + esc(c.operator ? c.operator.name + ' · ' + c.operator.area : 'Sin iniciar') + '</dd></div></dl>' +
         (!compact && coord ? '<div class="map"><iframe title="Ubicación del evento" loading="lazy" src="https://www.openstreetmap.org/export/embed.html?bbox=' + encodeURIComponent([c.longitude-.012,c.latitude-.007,c.longitude+.012,c.latitude+.007].join(',')) + '&layer=mapnik&marker=' + encodeURIComponent(c.latitude+','+c.longitude) + '"></iframe></div><a target="_blank" rel="noopener" href="https://www.openstreetmap.org/?mlat=' + c.latitude + '&mlon=' + c.longitude + '#map=16/' + c.latitude + '/' + c.longitude + '">Ampliar mapa</a>' : '') +
         reportDetails + (c.result ? '<p class="section-label">Resultado</p><p>' + esc(c.result) + '</p>' : '') +
-        ((c.events||[]).length ? '<p class="section-label">Eventos asociados ('+c.events.length+')</p>'+c.events.map(e=>'<p>'+esc(e.title)+' · '+date(e.occurredAt)+' · '+esc(e.measurement?e.measurement.text:'Valor no disponible')+'</p>').join('') : '') + '<div class="timing"><div><small>Tiempo total</small><strong data-time="total">—</strong></div><div><small>Hasta inicio atención</small><strong data-time="toStart">—</strong></div><div><small>Espera de conductor</small><strong data-time="waiting">—</strong></div><div><small>Seguimiento</small><strong data-time="followUp">—</strong></div></div></div>';
+        ((c.events||[]).length ? '<p class="section-label">Eventos asociados ('+c.events.length+')</p>'+c.events.map(e=>{const r=(this.rules||[]).find(x=>x.id===e.ruleId);const label=r&&r.customLabel?r.customLabel+': ':'';const txt=r&&r.kind==='none'?(e.measurement?'Solo alerta':'Valor no disponible'):(e.measurement?e.measurement.text:'Valor no disponible');return '<p>'+esc(e.title)+' · '+date(e.occurredAt)+' · '+esc(label+txt)+'</p>';}).join('') : '') + '<div class="timing"><div><small>Tiempo total</small><strong data-time="total">—</strong></div><div><small>Hasta inicio atención</small><strong data-time="toStart">—</strong></div><div><small>Espera de conductor</small><strong data-time="waiting">—</strong></div><div><small>Seguimiento</small><strong data-time="followUp">—</strong></div></div></div>';
     }
     renderContext() { this.$('context').innerHTML = this.contextHTML(this.selected, false); this.tick(); }
     renderWork(preserve = false) {
@@ -231,7 +450,7 @@
       if (this.$('take')) this.$('take').onclick = () => this.run(this.$('take'), stage => this.take(stage));
       if (this.$('mobile-back')) this.$('mobile-back').onclick = () => this.closeMobileCase();
       if (this.$('change-driver')) this.$('change-driver').onclick = () => this.driverDialog();
-      if (this.$('export')) this.$('export').onclick = () => this.run(this.$('export'), () => this.exportCases([c]));
+      if (this.$('export')) this.$('export').onclick = () => this.run(this.$('export'), stage => this.exportCases([c], stage));
       if (this.$('message-form')) this.$('message-form').onsubmit = event => { event.preventDefault(); const form = event.currentTarget; this.run(event.submitter, async stage => {stage('Preparando…');const data = new FormData(form), attachments = await this.prepareFiles(form.elements.files.files);await this.command('message',{ text:data.get('text'), requiresResponse:data.has('requiresResponse'), clarification:data.has('clarification'), attachments },this.selected,stage);if(this.role==='central')this.closeCentralCase();else this.renderWork();this.toast('Mensaje enviado al Servidor');}); };
       if (this.$('manage-form')) this.$('manage-form').onsubmit = event => { event.preventDefault(); const payload = Object.fromEntries(new FormData(event.currentTarget)); this.run(event.submitter, async stage => {stage('Guardando…');await this.command('manage',payload,this.selected,stage);this.renderWork();this.toast(payload.status==='FINALIZADA'?'Gestión finalizada':'Gestión registrada');}); };
       this.$('work').querySelectorAll('[data-evidence]').forEach(button => button.onclick = () => this.run(button, () => this.showEvidence(c.attachments.find(a => a.id === button.dataset.evidence),button)));
@@ -263,13 +482,14 @@
       if (!command) { command = { type, payload, caseId:id, version:current && current.version || 0, operationId:S.uid(),receipt:S.uid() }; this.pending.set(signature,command); }
       try {
         const result = await this.service.command(command,this.$('person').value,onProgress);
+        this.noteActivity();
         this.pending.delete(signature); this.cases = this.cases.filter(c => c.id !== result.id).concat(result); this.selected = result;
         if (this.role === 'driver') document.querySelector('.driver-shell').classList.add('case-open');
         if (this.mode !== 'live') this.historyRows = (this.historyRows || []).map(c => c.id === result.id ? result : c);
         this.renderContext(); this.renderWork(true); this.renderList(); this.metrics(); await this.updateRecovery(); return result;
       } catch (error) { if (!error.uncertain) this.pending.delete(signature); else if(this.$('recover'))this.$('recover').hidden=false; throw error; }
     }
-    async take(onProgress) { const c = this.selected;if(onProgress)onProgress('Guardando…');if (!c.version) await this.command('create',{...c,caseId:c.caseId || (c.caseId=D.month(new Date())+'_'+S.uid())},c,onProgress); else await this.command('take',{},c,onProgress); this.renderWork(); this.toast('Atención iniciada'); }
+    async take(onProgress) { if(this.role==='central'&&!this.$('person').value)return this.toast('Seleccione personal activo antes de continuar',true); const c = this.selected;if(onProgress)onProgress('Guardando…');if (!c.version) await this.command('create',{...c,caseId:c.caseId || (c.caseId=D.month(new Date())+'_'+S.uid())},c,onProgress); else await this.command('take',{},c,onProgress); this.renderWork(); this.toast('Atención iniciada'); }
     dialog(title, html) { this.$('dialog-title').textContent = title; this.$('dialog-body').innerHTML = html; if (!this.$('dialog').open) this.$('dialog').showModal(); }
     associateDialog() {
       const target=this.selected;
@@ -293,6 +513,7 @@
     }
     async createDialog() {
       if (!this.service) return this.toast('Abra la demostración o conecte Geotab',true);
+      if (this.role==='central' && !this.$('person').value) return this.toast('Seleccione personal activo antes de continuar',true);
       this.dialog(this.role === 'driver' ? 'Reportar incidente' : 'Crear caso','<div class="empty"><span class="spinner"></span>Preparando formulario…</div>');
       try {
         const driverResponse = this.role === 'central' ? await this.service.drivers() : [], deviceResponse = await this.service.devices(), mobile=this.role==='driver'&&this.service.mobileContext?await this.service.mobileContext():{};
@@ -303,6 +524,14 @@
       } catch(error) { this.toast(error.message,true); }
     }
     historyDialog() {
+      if (this.summaryMode) {
+        this.dialog('Consulta histórica','<form id="a-history-form" class="form-stack"><div class="presets"><button type="button" data-preset="today">Hoy</button><button type="button" data-preset="yesterday">Ayer</button><button type="button" data-preset="7days">Últimos 7 días</button></div><div class="two"><label>Desde · Lima<input name="from" type="datetime-local" step="1" required></label><label>Hasta · Lima<input name="to" type="datetime-local" step="1" required></label></div><button class="primary">Consultar</button></form>');
+        const form=this.$('history-form');
+        const setPreset=key=>{ const range=D.preset(key); for(const [name,value] of Object.entries(range)) form.elements[name].value=new Date(Date.parse(value)-18000000).toISOString().slice(0,19); form.querySelectorAll('[data-preset]').forEach(b=>{b.classList.toggle('active',b.dataset.preset===key);b.setAttribute('aria-pressed',String(b.dataset.preset===key));}); };
+        form.querySelectorAll('[data-preset]').forEach(b=>b.onclick=()=>setPreset(b.dataset.preset));setPreset('yesterday');
+        form.onsubmit=event=>{event.preventDefault();const value=Object.fromEntries(new FormData(form));this.run(event.submitter,async()=>{const from=new Date(value.from+'-05:00').toISOString(),to=new Date(value.to+'-05:00').toISOString();this.$('dialog').close();await this.loadSummaryData(from,to,date(from)+' — '+date(to));});};
+        return;
+      }
       this.dialog('Consulta histórica','<form id="a-history-form" class="form-stack"><label>Consultar<select name="source"><option value="cases">Historial de atenciones</option>' + (this.role==='central'?'<option value="events">Eventos Geotab por gestionar</option>':'') + '</select></label><div class="presets"><button type="button" data-preset="today">Hoy</button><button type="button" data-preset="yesterday">Ayer</button><button type="button" data-preset="7days">Últimos 7 días</button></div><div class="two"><label>Desde · Lima<input name="from" type="datetime-local" step="1" required></label><label>Hasta · Lima<input name="to" type="datetime-local" step="1" required></label></div><label>Regla (obligatoria para eventos Geotab)<select name="rule"><option value="">Seleccionar regla</option>' + (this.rules||[]).map(r=>'<option value="'+esc(r.id)+'">'+esc(r.name)+'</option>').join('') + '</select></label><p class="muted">Geotab: máximo 7 días. Atenciones: hasta un año por consulta. Los pendientes antiguos siguen en la vista activa.</p><button class="primary">Consultar</button></form>');
       const form=this.$('history-form');
       const setPreset=key=>{ const range=D.preset(key); for(const [name,value] of Object.entries(range)) form.elements[name].value=new Date(Date.parse(value)-18000000).toISOString().slice(0,19); form.querySelectorAll('[data-preset]').forEach(b=>{b.classList.toggle('active',b.dataset.preset===key);b.setAttribute('aria-pressed',String(b.dataset.preset===key));}); };
@@ -354,11 +583,24 @@
       this.dialog('Evidencia adjunta',meta+preview+actions);
     }
     clearEvidenceUrl(){if(this.evidenceUrl){URL.revokeObjectURL(this.evidenceUrl);this.evidenceUrl='';}}
-    async exportCases(cases) {
+    async exportCases(cases, onProgress) {
       if(!cases.length)throw new Error('No hay atenciones guardadas para exportar');
       if(cases.length>100)throw new Error('Filtre la consulta a un máximo de 100 casos por exportación');
-      const rows=[];for(const item of cases)rows.push(await this.service.detail(item.id));
-      const bytes=await window.ArdepePDF.generate(rows,file=>this.service.evidence(file));
+      if(onProgress)onProgress('Ejecutando…');
+      const rows=[];
+      for(const item of cases){
+        let lastError, ok=false;
+        const exportStart=Date.now();
+        // Hasta 3 intentos en silencio: solo ante una conexión lenta o caída (no ante un rechazo real
+        // del servidor, que ya llega marcado como definitivo y se muestra de inmediato).
+        for(let attempt=0;attempt<3&&!ok;attempt++){
+          try{ rows.push(await this.service.detail(item.id)); ok=true; }
+          catch(error){ lastError=error; if(error.definitive)break; if(attempt<2)await new Promise(r=>setTimeout(r,1000)); }
+        }
+        if(this.role==='central'){this.queryMs=Math.max(this.queryMs||0,Date.now()-exportStart);this.renderLimits();}
+        if(!ok)throw lastError;
+      }
+      const bytes=await window.ArdepePDF.generate(rows,file=>this.service.evidence(file),undefined,undefined,this.rules||[]);
       const url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'})),link=document.createElement('a');
       link.href=url;link.download='ARDEPE_atenciones_'+D.limaDay(new Date())+'.pdf';link.hidden=true;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
       this.toast('PDF generado con '+rows.length+' atención(es)');
@@ -378,13 +620,15 @@
         if(type==='settings'){
           const value=data.settings||{};
           const times=value.priorityMinutes||{CRITICA:15,ALTA:30,MEDIA:60,BAJA:120};
-          this.$('admin-editor').innerHTML='<form id="a-settings-form" class="form-stack"><div class="two"><label>Grupos de vehículos (coma)<input name="vehicleGroups" required value="'+esc((value.vehicleGroups||[]).join(', '))+'"></label><label>Grupos de conductores (coma)<input name="driverGroups" required value="'+esc((value.driverGroups||[]).join(', '))+'"></label></div><div class="two"><label>Actualización automática (ms)<input name="pollMs" type="number" min="5000" max="120000" value="'+esc(value.pollMs||15000)+'"></label><label>Límite por adjunto (bytes)<input name="maxAttachmentBytes" type="number" min="100000" max="3000000" value="'+esc(value.maxAttachmentBytes||3000000)+'"></label></div><p class="section-label">Alertas orientativas por prioridad (minutos)</p><div class="two"><label>Crítica<input name="criticalMinutes" type="number" min="1" max="10080" value="'+esc(times.CRITICA)+'"></label><label>Alta<input name="highMinutes" type="number" min="1" max="10080" value="'+esc(times.ALTA)+'"></label><label>Media<input name="mediumMinutes" type="number" min="1" max="10080" value="'+esc(times.MEDIA)+'"></label><label>Baja<input name="lowMinutes" type="number" min="1" max="10080" value="'+esc(times.BAJA)+'"></label></div><div class="two"><label>Casos por página histórica<input name="historyPageSize" type="number" min="25" max="200" value="'+esc(value.historyPageSize||100)+'"></label><label>Retención mínima (años)<input name="retentionYears" type="number" min="5" max="20" value="'+esc(value.retentionYears||5)+'"></label></div><label class="check"><input name="notificationsEnabled" type="checkbox" '+(value.notificationsEnabled!==false?'checked':'')+'>Notificaciones nativas en Geotab Drive cuando el permiso ya fue concedido</label><label>Texto adicional de guía Central<textarea name="centralGuide" maxlength="4000">'+esc(value.centralGuide||'')+'</textarea></label><label>Texto adicional de guía Geotab Drive<textarea name="driverGuide" maxlength="4000">'+esc(value.driverGuide||'')+'</textarea></label><p class="info">Los tiempos solo orientan alertas visuales; no son un SLA. Seguridad: PIN con hash y salt, sesiones de 30 minutos, adjuntos privados y acceso por conductor. Diagnóstico: la unidad real de Geotab se comprueba antes de convertir a G.</p><button class="primary">Guardar operación</button></form>';
-          this.$('settings-form').onsubmit=event=>{event.preventDefault();const fd=new FormData(event.currentTarget),next={vehicleGroups:String(fd.get('vehicleGroups')).split(',').map(x=>x.trim()).filter(Boolean),driverGroups:String(fd.get('driverGroups')).split(',').map(x=>x.trim()).filter(Boolean),pollMs:Number(fd.get('pollMs')),maxAttachmentBytes:Number(fd.get('maxAttachmentBytes')),historyPageSize:Number(fd.get('historyPageSize')),retentionYears:Number(fd.get('retentionYears')),priorityMinutes:{CRITICA:Number(fd.get('criticalMinutes')),ALTA:Number(fd.get('highMinutes')),MEDIA:Number(fd.get('mediumMinutes')),BAJA:Number(fd.get('lowMinutes'))},notificationsEnabled:fd.has('notificationsEnabled'),centralGuide:fd.get('centralGuide'),driverGuide:fd.get('driverGuide')};this.run(event.submitter,async()=>{await this.service.saveConfig('settings',next);await this.adminContent();await this.refresh();this.toast('Configuración operativa guardada');});};return;
+          this.$('admin-editor').innerHTML='<form id="a-settings-form" class="form-stack"><div class="two"><label>Grupos de vehículos (coma)<input name="vehicleGroups" required value="'+esc((value.vehicleGroups||[]).join(', '))+'"></label><label>Grupos de conductores (coma)<input name="driverGroups" required value="'+esc((value.driverGroups||[]).join(', '))+'"></label></div><div class="two"><label>Actualización automática (ms)<input name="pollMs" type="number" min="5000" max="120000" value="'+esc(value.pollMs||15000)+'"></label><label>Límite por adjunto (bytes)<input name="maxAttachmentBytes" type="number" min="100000" max="3000000" value="'+esc(value.maxAttachmentBytes||3000000)+'"></label></div><p class="section-label">Alertas orientativas por prioridad (minutos)</p><div class="two"><label>Crítica<input name="criticalMinutes" type="number" min="1" max="10080" value="'+esc(times.CRITICA)+'"></label><label>Alta<input name="highMinutes" type="number" min="1" max="10080" value="'+esc(times.ALTA)+'"></label><label>Media<input name="mediumMinutes" type="number" min="1" max="10080" value="'+esc(times.MEDIA)+'"></label><label>Baja<input name="lowMinutes" type="number" min="1" max="10080" value="'+esc(times.BAJA)+'"></label></div><div class="two"><label>Casos por página histórica<input name="historyPageSize" type="number" min="25" max="200" value="'+esc(value.historyPageSize||100)+'"></label><label>Retención mínima (años)<input name="retentionYears" type="number" min="5" max="20" value="'+esc(value.retentionYears||5)+'"></label></div><label class="check"><input name="notificationsEnabled" type="checkbox" '+(value.notificationsEnabled!==false?'checked':'')+'>Notificaciones nativas en Geotab Drive cuando el permiso ya fue concedido</label><label class="check"><input name="limitsWarningsEnabled" type="checkbox" '+(value.limitsWarningsEnabled!==false?'checked':'')+'>Aviso de límites del sistema en Central (casos activos, almacenamiento y tiempo de consulta)</label><label>Texto adicional de guía Central<textarea name="centralGuide" maxlength="4000">'+esc(value.centralGuide||'')+'</textarea></label><label>Texto adicional de guía Geotab Drive<textarea name="driverGuide" maxlength="4000">'+esc(value.driverGuide||'')+'</textarea></label><p class="info">Los tiempos solo orientan alertas visuales; no son un SLA. Seguridad: PIN con hash y salt, sesiones de 30 minutos, adjuntos privados y acceso por conductor. Diagnóstico: la unidad real de Geotab se comprueba antes de convertir a G.</p><button class="primary">Guardar operación</button></form>';
+          this.$('settings-form').onsubmit=event=>{event.preventDefault();const fd=new FormData(event.currentTarget),next={vehicleGroups:String(fd.get('vehicleGroups')).split(',').map(x=>x.trim()).filter(Boolean),driverGroups:String(fd.get('driverGroups')).split(',').map(x=>x.trim()).filter(Boolean),pollMs:Number(fd.get('pollMs')),maxAttachmentBytes:Number(fd.get('maxAttachmentBytes')),historyPageSize:Number(fd.get('historyPageSize')),retentionYears:Number(fd.get('retentionYears')),priorityMinutes:{CRITICA:Number(fd.get('criticalMinutes')),ALTA:Number(fd.get('highMinutes')),MEDIA:Number(fd.get('mediumMinutes')),BAJA:Number(fd.get('lowMinutes'))},notificationsEnabled:fd.has('notificationsEnabled'),limitsWarningsEnabled:fd.has('limitsWarningsEnabled'),centralGuide:fd.get('centralGuide'),driverGuide:fd.get('driverGuide')};this.run(event.submitter,async()=>{await this.service.saveConfig('settings',next);await this.adminContent();await this.refresh();this.toast('Configuración operativa guardada');});};return;
         }
         const items=data[type]||[],kindNames={stop:'Duración de parada',speed:'Velocidad máxima',acceleration:'Aceleración brusca',braking:'Frenada brusca',cornering:'Giro brusco'};
         const selectOptions=(values,selected)=>Object.entries(values).map(([value,label])=>'<option value="'+value+'" '+(value===selected?'selected':'')+'>'+label+'</option>').join('');
-        this.$('admin-editor').innerHTML='<div class="list-choice">'+items.map((item,i)=>'<button data-edit="'+i+'">'+esc(item.name)+'<small>'+esc(type==='personnel'?item.area:(kindNames[item.kind]||item.kind))+' · '+(item.active?'Activo':'Inactivo')+'</small></button>').join('')+'</div><button id="a-new-config" style="margin:12px 0">Agregar '+(type==='personnel'?'personal':'regla')+'</button><div id="a-config-form"></div>';
-        const edit=item=>{this.$('config-form').innerHTML='<form id="a-save-config" class="form-stack"><label>Nombre visible<input name="name" required value="'+esc(item.name)+'"></label>'+(type==='personnel'?'<label>Área<input name="area" required value="'+esc(item.area)+'"></label><label class="check"><input name="canManage" type="checkbox" '+(item.canManage!==false?'checked':'')+'>Puede gestionar casos</label>':'<label>ID de la regla en Geotab<input name="geotabRuleId" required value="'+esc(item.geotabRuleId)+'"><small>Identificador interno de la regla que generará los eventos.</small></label><div class="two"><label>Dato que se mostrará<select name="kind">'+selectOptions(kindNames,item.kind)+'</select></label><label>Unidad recibida desde Geotab<select name="sourceUnit">'+selectOptions({s:'Segundos — se mostrará HH:MM:SS','km/h':'Kilómetros por hora (km/h)',G:'Fuerza G','m/s2':'Metros por segundo² — se convertirá a G'},item.sourceUnit)+'</select></label></div><p class="info"><b>Ejemplos:</b> una parada recibida en segundos se mostrará como 00:05:13. Velocidad se mostrará como 92 km/h. Aceleración, frenada y giro se mostrarán en fuerza G. Use m/s² solamente cuando el diagnóstico de Geotab entregue esa unidad.</p><label>Prioridad<select name="priority">'+options(D.PRIORITIES,item.priority)+'</select></label><label class="check"><input name="show" type="checkbox" '+(item.show!==false?'checked':'')+'>Mostrar en Central</label><label class="check"><input name="allowSend" type="checkbox" '+(item.allowSend!==false?'checked':'')+'>Permitir envío al conductor</label>')+'<label class="check"><input name="active" type="checkbox" '+(item.active?'checked':'')+'>Activo</label><button class="primary">Guardar</button></form>';this.$('save-config').onsubmit=event=>{event.preventDefault();const fd=new FormData(event.currentTarget),value={...item,...Object.fromEntries(fd),id:item.id||S.uid(),active:fd.has('active')};if(type==='personnel')value.canManage=fd.has('canManage');else{value.show=fd.has('show');value.allowSend=fd.has('allowSend');}this.run(event.submitter,async()=>{await this.service.saveConfig(type,value);await this.adminContent();await this.refresh();this.toast('Configuración guardada');});};};
+        this.$('admin-editor').innerHTML='<div class="list-choice">'+items.map((item,i)=>'<button data-edit="'+i+'">'+esc(item.name)+'<small>'+esc(type==='personnel'?item.area:(item.customLabel||kindNames[item.kind]||item.kind))+' · '+(item.active?'Activo':'Inactivo')+'</small></button>').join('')+'</div><button id="a-new-config" style="margin:12px 0">Agregar '+(type==='personnel'?'personal':'regla')+'</button><div id="a-config-form"></div>';
+        const edit=item=>{this.$('config-form').innerHTML='<form id="a-save-config" class="form-stack"><label>Nombre visible<input name="name" required value="'+esc(item.name)+'"></label>'+(type==='personnel'?'<label>Área<input name="area" required value="'+esc(item.area)+'"></label><label class="check"><input name="canManage" type="checkbox" '+(item.canManage!==false?'checked':'')+'>Puede gestionar casos</label>':'<label>ID de la regla en Geotab<input name="geotabRuleId" required value="'+esc(item.geotabRuleId)+'"><small>Identificador interno de la regla que generará los eventos.</small></label><div class="two"><label>Dato que se mostrará<select id="a-kind-select" name="kind">'+selectOptions(kindNames,item.customLabel?'__custom__':item.kind)+'<option value="__custom__"'+(item.customLabel?' selected':'')+'>+ Nuevo tipo…</option></select></label><label id="a-unit-field">Unidad recibida desde Geotab<select name="sourceUnit">'+selectOptions({s:'Segundos — se mostrará HH:MM:SS','km/h':'Kilómetros por hora (km/h)',G:'Fuerza G','m/s2':'Metros por segundo² — se convertirá a G'},item.sourceUnit)+'</select></label></div><div id="a-custom-fields" class="two"'+(item.customLabel?'':' hidden')+'><label>Nombre del dato<input name="customLabel" value="'+esc(item.customLabel||'')+'" placeholder="Ej. Ralentí"></label><label>Cómo se mide<select name="customKind">'+selectOptions({stop:'Duración (HH:MM:SS)',none:'Sin valor (solo alerta)'},item.customLabel?item.kind:'stop')+'</select></label></div><p class="info"><b>Ejemplos:</b> una parada recibida en segundos se mostrará como 00:05:13. Velocidad se mostrará como 92 km/h. Aceleración, frenada y giro se mostrarán en fuerza G. Use m/s² solamente cuando el diagnóstico de Geotab entregue esa unidad.</p><label>Prioridad<select name="priority">'+options(D.PRIORITIES,item.priority)+'</select></label><label class="check"><input name="show" type="checkbox" '+(item.show!==false?'checked':'')+'>Mostrar en Central</label><label class="check"><input name="allowSend" type="checkbox" '+(item.allowSend!==false?'checked':'')+'>Permitir envío al conductor</label>')+'<label class="check"><input name="active" type="checkbox" '+(item.active?'checked':'')+'>Activo</label><button class="primary">Guardar</button></form>';this.$('save-config').onsubmit=event=>{event.preventDefault();const fd=new FormData(event.currentTarget);if(type!=='personnel'&&fd.get('kind')==='__custom__'&&!String(fd.get('customLabel')||'').trim())return this.toast('Escriba el nombre del dato',true);const value={...item,...Object.fromEntries(fd),id:item.id||S.uid(),active:fd.has('active')};if(type==='personnel')value.canManage=fd.has('canManage');else{value.show=fd.has('show');value.allowSend=fd.has('allowSend');if(value.kind==='__custom__'){value.customLabel=String(fd.get('customLabel')||'').trim();value.kind=fd.get('customKind')==='none'?'none':'stop';value.sourceUnit=value.kind==='stop'?'s':'';}else value.customLabel='';delete value.customKind;}this.run(event.submitter,async()=>{await this.service.saveConfig(type,value);await this.adminContent();await this.refresh();this.toast('Configuración guardada');});};
+        if(type!=='personnel'&&this.$('kind-select')){const toggleKind=()=>{const custom=this.$('kind-select').value==='__custom__';this.$('unit-field').hidden=custom;this.$('custom-fields').hidden=!custom;};this.$('kind-select').onchange=toggleKind;toggleKind();}
+      };
         this.$('admin-editor').querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>edit(items[Number(b.dataset.edit)]));this.$('new-config').onclick=()=>edit({active:true,priority:'MEDIA',kind:'stop',sourceUnit:'s'});
       };
       this.$('dialog-body').querySelectorAll('[data-admin]').forEach(b=>b.onclick=()=>{this.$('dialog-body').querySelectorAll('[data-admin]').forEach(x=>x.classList.toggle('active',x===b));render(b.dataset.admin);});render('personnel');
