@@ -254,21 +254,17 @@
     status(message, error) { this.$('connection').textContent = message; this.$('connection').className = 'connection' + (error ? ' error' : ''); }
     hideToast(){clearTimeout(this.toastTimer);const toast=this.$('toast');if(toast){toast.hidden=true;toast.textContent='';toast.className='toast';}}
     toast(message, error) { this.hideToast();const toast=this.$('toast');toast.textContent=message;toast.className='toast' + (error ? ' error' : '');toast.hidden=false;this.toastTimer=setTimeout(()=>this.hideToast(),4000); }
-    // Un clic ya no deja la pantalla esperando: se espera un momento razonable (8 s) y, si para
-    // entonces no hay respuesta, el botón se libera solo y la persona sigue usando la app con
-    // normalidad. Por dentro, el envío sigue intentando confirmarse solo, en silencio, hasta que
-    // termine (el mismo mecanismo de siempre). Si al final resulta ser un rechazo real (algo que
-    // exige corregir algo, como "El caso cambió"), recién ahí se avisa, aunque haya sido más tarde.
+    // El botón se queda esperando todo el tiempo que haga falta, sin soltarse solo: así siempre
+    // se ve que sigue trabajando, y nunca hace falta volver a hacer clic. Un rechazo real (que
+    // necesita tu atención, como "El caso cambió") se avisa; uno incierto por conexión no avisa
+    // nada, simplemente sigue reintentando por dentro hasta terminar.
     async run(button, fn) {
       if (button.disabled) return;
-      const html = button.innerHTML;
-      let active = true;
-      const stage = label => { if (active && button.isConnected) button.innerHTML = '<span class="spinner"></span>' + label; };
-      const release = () => { if (active) { active = false; if (button.isConnected) { button.disabled = false; button.innerHTML = html; } } };
-      button.disabled = true; stage('Procesando…');
-      const work = (async () => { try { await fn(stage); } catch (error) { if (error && error.definitive) this.toast(error.message, true); } })();
-      await Promise.race([work, new Promise(resolve => setTimeout(resolve, 8000))]);
-      release();
+      const html = button.innerHTML,stage=label=>{if(button.isConnected)button.innerHTML='<span class="spinner"></span>'+label;};
+      button.disabled=true;stage('Procesando…');
+      try{await fn(stage);}
+      catch(error){if(!error || !error.uncertain)this.toast(error.message,true);}
+      finally{if(button.isConnected){button.disabled=false;button.innerHTML=html;}}
     }
     // "timerGen" evita que se dupliquen las consultas de fondo. Cada pause() (llamado también desde
     // dentro de resume()) sube este número; cualquier cadena de consultas que haya quedado esperando
