@@ -103,7 +103,8 @@
     async rawRequest(params, post = false, onProgress) {
       if (!window.ARDEPE_CONFIG.backendUrl) throw new Error('El backend definitivo aún no está configurado. Esta pantalla no ha enviado datos.');
       const url = new URL(window.ARDEPE_CONFIG.backendUrl);
-      const values = { ...params, token: Object.hasOwn(params,'_token')?params._token:this.token, apiVersion: '2' };delete values._token;
+      const bounded = params._bounded;
+      const values = { ...params, token: Object.hasOwn(params,'_token')?params._token:this.token, apiVersion: '2' };delete values._token;delete values._bounded;
       if (post) {
         // El envío usa 'no-cors': el navegador nunca puede leer si el servidor lo aceptó o no.
         // Por eso el único modo confiable de saberlo es preguntar después ("Confirmando…"). Un fallo
@@ -115,26 +116,31 @@
         };
         await send();
         if(onProgress)onProgress('Confirmando…');
-        // Hasta unos 3 minutos de espera silenciosa: cubre una conexión lenta o una caída corta sin
-        // mostrar ningún error, siempre con el mismo número de operación, así que nunca se duplica.
-        // Pasados ~20 s sin noticia, el aviso cambia para que no se sienta como que la pantalla murió,
-        // aunque el sistema siga intentando igual por dentro. Se reenvía a los ~15 s y a los ~90 s,
-        // por si el primer envío nunca llegó a salir del navegador.
-        const resendAt = new Set([24, 155]);
-        let warned = false;
-        for (let attempt = 0; attempt < 305; attempt++) {
-          await new Promise(resolve => setTimeout(resolve, attempt<8?250:600));
-          if (!warned && attempt === 40) { warned = true; if (onProgress) onProgress('Esto está tardando más de lo normal, seguimos intentando…'); }
-          if (resendAt.has(attempt)) await send();
+        // Nunca se rinde para el envío que la persona está esperando en pantalla: sigue intentando
+        // confirmar de forma indefinida, sin mostrar ningún error, hasta que de verdad se resuelva
+        // (o el servidor rechace algo de verdad). El botón se queda esperando todo ese tiempo, sin
+        // soltarse solo, para que nunca haga falta volver a hacer clic. Pasados ~20 s el aviso
+        // cambia para dejar claro que sigue trabajando, y se reenvía el mismo envío cada 2 minutos
+        // por si el primero nunca llegó a salir del navegador. Para los envíos de fondo (uno viejo
+        // que se resuelve solo, sin que nadie lo esté esperando en pantalla), el intento es acotado
+        // a unos 2 minutos, para no quedarse pegado en uno solo y no pasar a resolver los demás.
+        let attempt = 0, warned = false, elapsed = 0, lastResend = 0;
+        while (true) {
+          if (bounded && elapsed >= 120000) { const error = new Error('Envío de fondo agotó su intento; se reintentará más adelante.'); error.uncertain = true; throw error; }
+          const delay = attempt < 8 ? 250 : 600;
+          await new Promise(resolve => setTimeout(resolve, delay));
+          elapsed += delay;
+          if (!warned && elapsed >= 20000) { warned = true; if (onProgress) onProgress('Esto está tardando más de lo normal, seguimos intentando…'); }
+          if (elapsed - lastResend >= 120000) { lastResend = elapsed; await send(); }
           let status;
           try {
             status = params.action==='v2.login'
               ? await this.rawRequest({ action: 'v2.operation', operationId: params.operationId, receipt: params.receipt, _token:'' })
               : await this.request({ action: 'v2.operation', operationId: params.operationId, receipt: params.receipt });
-          } catch (error) { if (error.definitive) throw error; continue; }
+          } catch (error) { if (error.definitive) throw error; attempt++; continue; }
           if (!status.pending) { if (!status.success) { const error=new Error(status.message); error.definitive=true; throw error; } return status.result; }
+          attempt++;
         }
-        const error = new Error('El servidor aún no confirmó la operación. Reintente conservando los datos; se usará la misma operación.'); error.uncertain = true; throw error;
       }
       Object.entries(values).forEach(([key, value]) => url.searchParams.set(key, value));
       // Las consultas (leer, no escribir) son seguras de repetir: si una falla por una conexión
@@ -203,14 +209,17 @@
       if (this._resolvingStale) return; this._resolvingStale = true;
       try {
         const map = await this.pendingMap();
-        for (const operationId of Object.keys(map)) {
-          if (operationId === skipOperationId) continue;
+        // Cada entrada se intenta en paralelo, no una por una: si alguna sigue sin poder resolverse,
+        // no debe frenar a las demás. Es un intento acotado (a diferencia del envío que la persona
+        // está esperando en pantalla, que nunca se rinde); si no alcanza, la entrada queda igual en
+        // la lista para el próximo intento (el siguiente envío, o la próxima vez que se abra sesión).
+        await Promise.allSettled(Object.keys(map).filter(operationId => operationId !== skipOperationId).map(async operationId => {
           const entry = map[operationId];
           try {
-            await this.request({ action: 'v2.command', operationId, receipt: entry.command.receipt, command: JSON.stringify(entry.command), personId: entry.personId || '' }, true, false);
+            await this.request({ action: 'v2.command', operationId, receipt: entry.command.receipt, command: JSON.stringify(entry.command), personId: entry.personId || '', _bounded: true }, true, false);
             await this.clearPendingEntry(operationId);
           } catch (error) { if (error.definitive) await this.clearPendingEntry(operationId); }
-        }
+        }));
       } finally { this._resolvingStale = false; }
     }
     async recoverPending() {
