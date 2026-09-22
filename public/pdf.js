@@ -79,5 +79,5 @@
     const pages=pdf.getPages();pages.forEach((p,i)=>{drawHeader(p);p.drawText('ARDEPE - '+(i+1)+' / '+pages.length,{x:margin,y:25,font,size:9,color:rgb(.4,.4,.4)});});
     return pdf.save();
   }
-  root.ArdepePDF={generate};
+  root.ArdepePDF={generate,EMBEDDED_LOGO};
 })(typeof window==='undefined'?globalThis:window);
