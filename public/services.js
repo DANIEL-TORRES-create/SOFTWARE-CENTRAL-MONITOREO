@@ -115,13 +115,16 @@
         };
         await send();
         if(onProgress)onProgress('Confirmando…');
-        // Hasta unos 10 minutos de espera silenciosa: cubre una caída larga (de Drive, de red, lo que
-        // sea) sin mostrar ningún error ni pedir nada al usuario, siempre con el mismo número de
-        // operación, así que nunca se duplica. Además del reenvío a los ~15 s, se repite cada 2
-        // minutos por si el primer envío nunca llegó a salir del navegador.
-        const resendAt = new Set([24, 205, 405, 605, 805]);
-        for (let attempt = 0; attempt < 1005; attempt++) {
+        // Hasta unos 3 minutos de espera silenciosa: cubre una conexión lenta o una caída corta sin
+        // mostrar ningún error, siempre con el mismo número de operación, así que nunca se duplica.
+        // Pasados ~20 s sin noticia, el aviso cambia para que no se sienta como que la pantalla murió,
+        // aunque el sistema siga intentando igual por dentro. Se reenvía a los ~15 s y a los ~90 s,
+        // por si el primer envío nunca llegó a salir del navegador.
+        const resendAt = new Set([24, 155]);
+        let warned = false;
+        for (let attempt = 0; attempt < 305; attempt++) {
           await new Promise(resolve => setTimeout(resolve, attempt<8?250:600));
+          if (!warned && attempt === 40) { warned = true; if (onProgress) onProgress('Esto está tardando más de lo normal, seguimos intentando…'); }
           if (resendAt.has(attempt)) await send();
           let status;
           try {
@@ -134,9 +137,21 @@
         const error = new Error('El servidor aún no confirmó la operación. Reintente conservando los datos; se usará la misma operación.'); error.uncertain = true; throw error;
       }
       Object.entries(values).forEach(([key, value]) => url.searchParams.set(key, value));
-      const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(30000) });
-      if (!response.ok) throw new Error('Error de conexión (' + response.status + ')');
-      const result = await response.json(); if (!result.success) { const error=new Error(result.message || 'Operación rechazada');error.definitive=true;throw error; } return result;
+      // Las consultas (leer, no escribir) son seguras de repetir: si una falla por una conexión
+      // lenta puntual, se reintenta un par de veces antes de mostrar cualquier error.
+      let lastError;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(30000) });
+          if (!response.ok) throw new Error('Error de conexión (' + response.status + ')');
+          const result = await response.json(); if (!result.success) { const error=new Error(result.message || 'Operación rechazada');error.definitive=true;throw error; } return result;
+        } catch (error) {
+          lastError = error;
+          if (error.definitive) throw error;
+          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+      throw lastError;
     }
     async connect() {
       let driver;
