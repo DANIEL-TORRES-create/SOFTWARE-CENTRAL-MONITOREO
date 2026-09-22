@@ -111,11 +111,11 @@
     function newPage() { page = pdf.addPage([width, height]); y = height - 118; }
     function drawHeader(target) {
       if (!logo) return;
-      const top = height - 42, scale = Math.min(108 / logo.width, 42 / logo.height);
-      target.drawImage(logo, { x: margin, y: top - logo.height * scale + 5, width: logo.width * scale, height: logo.height * scale });
-      target.drawText('ARDEPE S.A.C.', { x: margin + 122, y: top, font: bold, size: 11, color: rgb(.65, .18, .15) });
-      target.drawText('Resumen de atenciones · Central Integral de Monitoreo', { x: margin + 122, y: top - 15, font, size: 9, color: rgb(.25, .31, .36) });
-      target.drawLine({ start: { x: margin, y: top - 30 }, end: { x: width - margin, y: top - 30 }, thickness: 1, color: rgb(.65, .18, .15) });
+      const logoH = 36, logoW = logo.width * (logoH / logo.height), headerTop = height - 24;
+      target.drawImage(logo, { x: margin, y: headerTop - logoH, width: logoW, height: logoH });
+      target.drawText('ARDEPE S.A.C.', { x: margin + logoW + 14, y: headerTop - 11, font: bold, size: 11, color: rgb(.65, .18, .15) });
+      target.drawText('Resumen de atenciones · Central Integral de Monitoreo', { x: margin + logoW + 14, y: headerTop - 25, font, size: 9, color: rgb(.25, .31, .36) });
+      target.drawLine({ start: { x: margin, y: headerTop - logoH - 6 }, end: { x: width - margin, y: headerTop - logoH - 6 }, thickness: 1, color: rgb(.65, .18, .15) });
     }
     function space(n) { if (!page || y - n < 48) newPage(); }
     function text(value, opt) { opt = opt || {}; const size = opt.size || 10, f = opt.strong ? bold : font, color = opt.color || rgb(.15, .19, .23); space(size + 6); page.drawText(String(value), { x: margin, y, font: f, size, color }); y -= size + 6; }
