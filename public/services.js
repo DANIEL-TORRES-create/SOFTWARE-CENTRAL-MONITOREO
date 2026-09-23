@@ -3,6 +3,19 @@
   const D = window.ArdepeDomain;
   const uid = () => crypto.randomUUID();
   const clone = value => JSON.parse(JSON.stringify(value));
+  // Divide un rango largo en tramos de a lo más "maxDays" días, para consultar Geotab de a poco
+  // (uno detrás de otro, nunca en paralelo) en vez de una sola consulta enorme que lo sature.
+  function splitRange(from, to, maxDays) {
+    const blocks = [], stepMs = maxDays * 86400000, end = Date.parse(to);
+    let start = Date.parse(from);
+    while (start < end) {
+      const blockEnd = Math.min(start + stepMs, end);
+      blocks.push({ from: new Date(start).toISOString(), to: new Date(blockEnd).toISOString() });
+      start = blockEnd;
+    }
+    if (!blocks.length) blocks.push({ from: new Date(start).toISOString(), to: new Date(end).toISOString() });
+    return blocks;
+  }
   const defaults = {
     personnel: [{ id: 'demo-operator', name: 'José Pérez', area: 'Monitoreo', active: true, canManage: true }],
     rules: [
@@ -59,7 +72,7 @@
     async devices() { return [{ id: 'CDK-772', name: 'CDK-772' }, { id: 'BHV-918', name: 'BHV-918' }]; }
     async mobileContext() { return { deviceId:'CDK-772', plate:'CDK-772', location:'Ubicación simulada de Geotab Drive', latitude:-11.984, longitude:-77.126 }; }
     async history(from, to) { D.range(from, to, 366); return {cases:(await this.bootstrap()).cases.filter(c => c.occurredAt >= from && c.occurredAt <= to),nextPageToken:''}; }
-    async explore(from, to, rule) { D.range(from, to); if (!rule) throw new Error('Seleccione una regla'); const data = await this.bootstrap(); return data.events.filter(e => e.occurredAt >= from && e.occurredAt <= to && e.measurement.kind === rule && !data.cases.some(c => c.eventKeys.includes(e.eventKey))); }
+    async explore(from, to, rule) { D.range(from, to, 35); if (!rule) throw new Error('Seleccione una regla'); const data = await this.bootstrap(); return data.events.filter(e => e.occurredAt >= from && e.occurredAt <= to && e.measurement.kind === rule && !data.cases.some(c => c.eventKeys.includes(e.eventKey))); }
     async evidence(file) { return file.dataUrl; }
     async adminLogin() { return { demo: true }; }
     async adminData() { return clone(this.read().config); }
@@ -77,6 +90,9 @@
         let settled=false;
         const done=value=>{if(!settled){settled=true;resolve(value);}};
         const fail=error=>{if(!settled){settled=true;reject(error instanceof Error?error:new Error(String(error&&error.message||error||'Error de Geotab')));}};
+        // Si Geotab nunca llama a ninguno de los dos (un caso raro, pero posible), esto evita que
+        // la promesa se quede esperando para siempre y bloquee toda la carga detrás de ella.
+        setTimeout(()=>fail(new Error('Geotab no respondió a tiempo')),25000);
         try{
           const result=this.api.call(method,params,done,fail);
           if(result&&typeof result.then==='function')result.then(done,fail);
@@ -143,21 +159,25 @@
         }
       }
       Object.entries(values).forEach(([key, value]) => url.searchParams.set(key, value));
-      // Las consultas (leer, no escribir) son seguras de repetir: si una falla por una conexión
-      // lenta puntual, se reintenta un par de veces antes de mostrar cualquier error.
-      let lastError;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      // Las consultas (leer, no escribir) son seguras de repetir. Para lo que la persona está
+      // esperando en pantalla, nunca se rinde ni muestra un error de red: sigue intentando en
+      // silencio hasta lograrlo, o hasta que el servidor rechace algo de verdad. Para las
+      // consultas de fondo (el marcador liviano, el refresco automático), el intento queda
+      // acotado a unos 20 s, para no demorar el siguiente ciclo si algo falla.
+      let attempt = 0, elapsed = 0;
+      while (true) {
+        if (bounded && elapsed >= 20000) { const error = new Error('Consulta de fondo agotó su intento; se reintentará en el próximo ciclo.'); error.uncertain = true; throw error; }
         try {
           const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(30000) });
           if (!response.ok) throw new Error('Error de conexión (' + response.status + ')');
           const result = await response.json(); if (!result.success) { const error=new Error(result.message || 'Operación rechazada');error.definitive=true;throw error; } return result;
         } catch (error) {
-          lastError = error;
           if (error.definitive) throw error;
-          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000));
+          const delay = attempt < 3 ? 1000 : 2000;
+          await new Promise(resolve => setTimeout(resolve, delay));
+          elapsed += delay; attempt++;
         }
       }
-      throw lastError;
     }
     async connect() {
       let driver;
@@ -176,10 +196,15 @@
       // una vez anterior (por ejemplo, si se cerró la pestaña antes de que terminara de resolverse).
       this.resolveStalePending();
     }
-    async bootstrap() {
-      const response = await this.request({ action: 'v2.bootstrap' });
+    async bootstrap(bounded) {
+      const response = await this.request({ action: 'v2.bootstrap', _bounded: bounded });
       this.rules = response.rules || []; this.settings = response.settings || {};
-      return { ...response, actor: this.actor, events: this.role === 'central' ? await this.queryEvents(D.preset('today').from, new Date().toISOString()) : [] };
+      // Si la consulta a Geotab se demora, no debe bloquear el resto: los casos (que ya llegaron
+      // del servidor) se muestran igual, y los eventos de hoy llegan un momento después, en el
+      // siguiente refresco, en vez de dejar toda la pantalla esperando por ellos.
+      let events = [];
+      if (this.role === 'central') { try { events = await this.queryEvents(D.preset('today').from, new Date().toISOString()); } catch (_) {} }
+      return { ...response, actor: this.actor, events };
     }
     async detail(id) { return (await this.request({ action: 'v2.case', caseId: id })).case; }
     pendingKey() { return 'ardepe-pending-v2:' + window.ARDEPE_CONFIG.backendUrl + ':' + this.actor.id + ':' + this.role; }
@@ -258,7 +283,7 @@
       return context;
     }
     // Consulta liviana: solo pregunta al servidor su marca en memoria, sin leer ninguna hoja.
-    async marker() { return (await this.request({ action: 'v2.marker' })).marker || ''; }
+    async marker() { return (await this.request({ action: 'v2.marker', _bounded: true })).marker || ''; }
     async drivers() {
       if (!this.driverList) {
         const users = await this.geotabCall('Get', { typeName: 'User' });
@@ -390,10 +415,25 @@
       return event;
     }
     async history(from, to, pageToken='') { D.range(from, to, 366); return this.request({ action: 'v2.history', from, to, pageToken }); }
-    async explore(from, to, rule) {
-      if (!rule) throw new Error('Seleccione una regla'); const events = await this.queryEvents(from, to, rule);
-      const result = await this.request({ action: 'v2.associations', from, to });
-      return events.filter(e => !result.eventKeys.includes(e.eventKey));
+    async explore(from, to, rule, onProgress) {
+      if (!rule) throw new Error('Seleccione una regla');
+      // Hasta 35 días en total (más de un mes, con margen), consultados de a 7 días por vez, uno
+      // detrás de otro, sin saturar Geotab. Cada tramo espera a que termine el anterior por sí solo,
+      // ya que queryEvents() no permite dos consultas de Geotab al mismo tiempo.
+      D.range(from, to, 35);
+      const blocks = splitRange(from, to, 7);
+      const foundEvents = new Map(), associatedKeys = new Set();
+      for (let i = 0; i < blocks.length; i++) {
+        if (onProgress && blocks.length > 1) onProgress('Consultando semana ' + (i + 1) + ' de ' + blocks.length + '…');
+        const block = blocks[i];
+        const events = await this.queryEvents(block.from, block.to, rule);
+        const result = await this.request({ action: 'v2.associations', from: block.from, to: block.to });
+        (result.eventKeys || []).forEach(k => associatedKeys.add(k));
+        // Se guarda por clave, no se agrega sin más: si un evento cayera justo en el borde entre
+        // dos bloques, esto evita que aparezca duplicado en el resultado final.
+        events.forEach(e => foundEvents.set(e.eventKey, e));
+      }
+      return [...foundEvents.values()].filter(e => !associatedKeys.has(e.eventKey));
     }
     async evidence(file) { return (await this.request({ action: 'v2.evidence', caseId: file.caseId, fileId: file.fileId })).dataUrl; }
     async adminLogin(pin) { const response = await this.request({ action: 'v2.adminLogin', pin, operationId: uid(), receipt: uid() }, true); this.adminToken = response.adminToken; return response; }
