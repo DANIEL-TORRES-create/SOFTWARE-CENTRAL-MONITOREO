@@ -212,10 +212,10 @@
     }
     async startup(api, state, callback) {
       try{
-        this.api=api;this.state=state;this.backgroundService=new S.LiveService(api,'driver');await this.backgroundService.connect();await this.checkDriverNotifications(this.backgroundService);this.startBackgroundNotifications(this.backgroundService);
+        this.api=api;this.state=state;this.backgroundService=new S.LiveService(api,'driver');await this.backgroundService.connect();await this.checkDriverNotifications(this.backgroundService,true);this.startBackgroundNotifications(this.backgroundService);
       }catch(_){}finally{if(callback)callback();}
     }
-    async checkDriverNotifications(service) {
+    async checkDriverNotifications(service, bounded) {
       if(!service||this.notificationChecking)return;this.notificationChecking=true;
       try{
         // Antes de la consulta completa, se pregunta la marca liviana: si no cambió desde la
@@ -226,7 +226,7 @@
           if(marker===this.lastBackgroundMarker)return;
           this.lastBackgroundMarker=marker;
         }
-        const data=await service.bootstrap(),unread=(data.cases||[]).filter(c=>c.lastCentralMessageAt>(c.readByDriverAt||'')).length;if(unread){const latest=(data.cases||[]).map(c=>c.lastCentralMessageAt||'').sort().pop();await service.notify('Central ARDEPE',unread===1?'Tiene una solicitud nueva de Monitoreo':'Tiene '+unread+' solicitudes nuevas de Monitoreo',latest);}
+        const data=await service.bootstrap(bounded),unread=(data.cases||[]).filter(c=>c.lastCentralMessageAt>(c.readByDriverAt||'')).length;if(unread){const latest=(data.cases||[]).map(c=>c.lastCentralMessageAt||'').sort().pop();await service.notify('Central ARDEPE',unread===1?'Tiene una solicitud nueva de Monitoreo':'Tiene '+unread+' solicitudes nuevas de Monitoreo',latest);}
       }finally{this.notificationChecking=false;}
     }
     startBackgroundNotifications(service) { this.stopBackgroundNotifications();if(!service||this.role!=='driver')return;this.notificationTimer=setInterval(()=>this.checkDriverNotifications(service).catch(()=>{}),15000); }
