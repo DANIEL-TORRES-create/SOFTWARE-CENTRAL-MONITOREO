@@ -42,22 +42,35 @@
     renderSummaryHint() {
       this.$('summary-content').innerHTML = '<div class="empty"><strong>Seleccione un período en Histórico para ver el resumen.</strong>Elija Hoy, Ayer, Últimos 7 días, o un rango de fechas, y pulse Consultar.</div>';
     }
+    // Trae todas las páginas de un rango, mostrando progreso mientras avanza (para que nunca se
+    // sienta trabado, aunque tome un rato con un rango amplio). Tiene un tope de seguridad generoso
+    // (300 páginas) solo para no crecer sin fin ante algo fuera de lo normal; con el volumen actual
+    // no debería acercarse ni de lejos a ese número.
+    async fetchAllPages(from, to, onProgress) {
+      let cases = [], token = '', pages = 0;
+      do {
+        const r = await this.service.history(from, to, token);
+        cases = cases.concat(r.cases); token = r.nextPageToken || ''; pages++;
+        if (onProgress) onProgress(cases.length, pages);
+        if (pages >= 300) throw new Error('El período tiene demasiados casos para traerlos todos de una vez. Reduzca el rango.');
+      } while (token);
+      return cases;
+    }
     async loadSummaryData(from, to, periodLabel) {
-      this.$('summary-content').innerHTML = '<div class="empty"><span class="spinner"></span>Consultando…</div>';
+      const updateProgress = (count, pages) => { if (this.summaryMode && this.$('summary-content')) this.$('summary-content').innerHTML = '<div class="empty"><span class="spinner"></span>Consultando… ' + count + ' casos encontrados hasta ahora' + (pages > 1 ? ' (página ' + pages + ')' : '') + '</div>'; };
+      updateProgress(0, 0);
       try {
-        let cases = [], token = '';
-        do { const r = await this.service.history(from, to, token); cases = cases.concat(r.cases); token = r.nextPageToken || ''; } while (token);
+        const cases = await this.fetchAllPages(from, to, updateProgress);
         this.summaryData = { from, to, periodLabel, cases, filters: {} };
         // La tendencia de 6 meses se carga una sola vez por sesión de Resumen (no en cada filtro),
         // y usa el mismo conjunto de filtros al momento de dibujarla.
         if (!this.summaryTrendCases) {
           const trendTo = new Date(), trendFrom = new Date(trendTo.getFullYear(), trendTo.getMonth() - 5, 1);
-          let trendCases = [], t2 = '';
-          try { do { const r = await this.service.history(trendFrom.toISOString(), trendTo.toISOString(), t2); trendCases = trendCases.concat(r.cases); t2 = r.nextPageToken || ''; } while (t2); } catch (_) {}
-          this.summaryTrendCases = trendCases;
+          try { this.summaryTrendCases = await this.fetchAllPages(trendFrom.toISOString(), trendTo.toISOString(), (count,pages) => { if (this.summaryMode && this.$('summary-content')) this.$('summary-content').innerHTML = '<div class="empty"><span class="spinner"></span>Cargando la tendencia de los últimos 6 meses… ' + count + ' casos</div>'; }); }
+          catch (_) { this.summaryTrendCases = []; }
         }
-        this.renderSummaryDashboard();
-      } catch (error) { this.$('summary-content').innerHTML = '<div class="empty">' + esc(error.message) + '</div>'; }
+        if (this.summaryMode) this.renderSummaryDashboard();
+      } catch (error) { if (this.summaryMode && this.$('summary-content')) this.$('summary-content').innerHTML = '<div class="empty">' + esc(error.message) + '</div>'; }
     }
     summaryFilterLabel(filters) {
       const parts = [];
@@ -182,10 +195,20 @@
       const root = document.getElementById('ardepe-root'); if (!root) return;
       root.innerHTML = this.layout(); this.bind(); this.mounted = true;
       if (!this.service) { this.status('Abra esta página en ' + (this.role === 'driver' ? 'Geotab Drive' : 'MyGeotab'), true); this.$('list').innerHTML = '<div class="empty"><strong>Conexión Geotab requerida</strong>Puede revisar la interfaz sin conexiones reales.<br><br><a href="?demo=1">Abrir demostración local</a></div>'; return; }
+      // Mientras carga por primera vez, se bloquean los botones y la lista de casos del
+      // conductor: si se toca algo antes de tener los datos completos, podría actuar sobre
+      // información vieja o incompleta. Una vez cargado, los refrescos normales ya no bloquean
+      // nada — esto es solo para el instante de abrir la aplicación.
+      if (this.role === 'driver') this.setBooting(true);
       try {
         if (!this.demo && !this.service.token) await this.service.connect();
         await this.refresh(); this.resume();
       } catch (error) { this.status(error.message, true); this.toast(error.message, true); }
+      finally { if (this.role === 'driver') this.setBooting(false); }
+    }
+    setBooting(locked) {
+      ['create','history'].forEach(id => { if (this.$(id)) this.$(id).disabled = locked; });
+      if (this.$('list')) { this.$('list').style.pointerEvents = locked ? 'none' : ''; this.$('list').style.opacity = locked ? '0.55' : ''; }
     }
     async startup(api, state, callback) {
       try{
@@ -230,7 +253,10 @@
         '<dialog id="a-dialog" class="modal"><header><h2 id="a-dialog-title"></h2><button id="a-close" aria-label="Cerrar">×</button></header><div id="a-dialog-body" class="body"></div></dialog><div id="a-toast" class="toast" role="status" hidden></div><div id="a-print" class="print-view"></div>';
     }
     bind() {
-      this.$('refresh').onclick = () => this.run(this.$('refresh'), () => this.refresh());
+      this.$('refresh').onclick = () => this.run(this.$('refresh'), async () => {
+        if (this.mode !== 'live') { if(!this.clearSelection())return; this.mode = 'live'; this.$('history-banner').hidden = true; this.$('state').value = 'ALL'; if(this.role==='central'&&this.origin==='ALL')this.origin='GEOTAB'; if(this.role==='driver'&&this.origin==='ALL')this.origin='NEW'; this.$('tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.origin===this.origin)); this.renderList(); this.metrics(); }
+        await this.refresh();
+      }).then(() => { if (this.$('refresh')) this.$('refresh').textContent = this.mode === 'live' ? 'Actualizar' : 'Volver a en vivo'; });
       this.$('tabs').onclick = event => { const button = event.target.closest('[data-origin]'); if (!button || button.dataset.origin===this.origin) return; if(!this.clearSelection())return; this.origin = button.dataset.origin; this.page = 0; this.$('tabs').querySelectorAll('button').forEach(b => b.classList.toggle('active', b === button)); this.updateRuleFilter(); this.renderList(); };
       ['rule','state','priority','search','owner-filter'].filter(id=>this.$(id)).forEach(id => this.$(id).addEventListener('input', () => { this.page = 0; this.renderList(); }));
       this.$('person').onchange = () => { sessionStorage.setItem('ardepe-person', this.$('person').value); if (this.selected) this.renderWork(); };
@@ -241,7 +267,7 @@
         this.page++; this.renderList();
       };
       this.$('close').onclick = () => { this.$('dialog').close();this.clearEvidenceUrl(); };
-      this.$('create').onclick = () => this.createDialog(); this.$('history').onclick = () => this.historyDialog();
+      this.$('create').onclick = () => this.run(this.$('create'), () => this.createDialog()); this.$('history').onclick = () => this.historyDialog();
       if (this.$('summary')) this.$('summary').onclick = () => this.enterSummary();
       if (this.$('summary-back')) this.$('summary-back').onclick = () => this.exitSummary();
       this.$('live').onclick = () => { if(!this.clearSelection())return;this.mode = 'live'; this.$('history-banner').hidden = true; this.$('state').value = 'ALL'; if(this.role==='central'&&this.origin==='ALL')this.origin='GEOTAB';if(this.role==='driver'&&this.origin==='ALL')this.origin='NEW';this.$('tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.origin===this.origin));this.refresh().catch(e => this.toast(e.message, true)); };
@@ -304,18 +330,18 @@
     }
     async checkForChanges() {
       if (!this.service || this.refreshing) return;
-      if (typeof this.service.marker !== 'function') { await this.refresh(); return; }
+      if (typeof this.service.marker !== 'function') { await this.refresh(true); return; }
       const safetyNet = Date.now() - this.lastFullRefresh > 60000;
       let marker = this.lastMarker;
       try { marker = await this.service.marker(); } catch (_) { /* si falla, la red de seguridad igual refresca */ }
-      if (safetyNet || marker !== this.lastMarker) { this.lastMarker = marker; await this.refresh(); }
+      if (safetyNet || marker !== this.lastMarker) { this.lastMarker = marker; await this.refresh(true); }
     }
-    async refresh() {
+    async refresh(bounded) {
       if (!this.service || this.refreshing || this.mode !== 'live') return;
       this.refreshing = true; this.lastFullRefresh = Date.now(); this.status('Actualizando…');
       try {
         const previousUnread=this.role==='driver'?this.cases.filter(c=>this.unread(c)).length:0;
-        const queryStart = Date.now(); const data = await this.service.bootstrap(); this.queryMs = Date.now() - queryStart; this.people = data.personnel || []; this.rules = data.rules || []; this.cases = data.cases || []; this.events = data.events || []; this.limits = data.limits || null; this.updateRuleFilter(true);
+        const queryStart = Date.now(); const data = await this.service.bootstrap(bounded); this.queryMs = Date.now() - queryStart; this.people = data.personnel || []; this.rules = data.rules || []; this.cases = data.cases || []; this.events = data.events || []; this.limits = data.limits || null; this.updateRuleFilter(true);
         const unreadNow=this.role==='driver'?this.cases.filter(c=>this.unread(c)).length:0;
         if(this.role==='driver'&&unreadNow>previousUnread&&previousUnread>=0){const latest=this.cases.map(c=>c.lastCentralMessageAt||'').sort().pop();this.service.notify('Central ARDEPE',unreadNow===1?'Tiene una solicitud nueva de Monitoreo':'Tiene '+unreadNow+' solicitudes nuevas de Monitoreo',latest);}
         this.$('identity').textContent = this.role === 'driver' ? data.actor.name : 'Hora operativa · Lima';
@@ -410,6 +436,7 @@
       const rows = this.filtered(), pages = Math.max(1, Math.ceil(rows.length / 25)); this.page = Math.min(this.page, pages - 1);
       if(this.selected&&!rows.some(row=>row.id===this.selected.id)&&!this.hasDraft()){this.clearSelection(true);return;}
       this.$('count').textContent = rows.length + ' casos'; this.$('page').textContent = (this.page + 1) + ' / ' + pages;
+      if (this.$('refresh')) this.$('refresh').textContent = this.mode === 'live' ? 'Actualizar' : 'Volver a en vivo';
       this.$('prev').disabled = this.page === 0; this.$('next').disabled = this.page >= pages - 1 && !(this.mode==='cases'&&this.historyNextToken);
       this.$('page').parentElement.hidden=pages<=1&&!(this.mode==='cases'&&this.historyNextToken);
       const all=this.all(),active=c=>this.mode!=='live'||c.status!=='FINALIZADA';this.$('tabs').querySelectorAll('[data-origin-count]').forEach(node=>{const id=node.dataset.originCount;let count;if(this.role==='driver')count=all.filter(c=>this.driverBucket(c)===id).length;else count=all.filter(c=>c.origin===id&&active(c)).length;node.textContent=String(count);
@@ -516,7 +543,7 @@
       if(managementOpen&&this.$('manage-form'))this.$('manage-form').closest('details').open=true;work.dataset.dirty=dirty?'1':'';work.oninput=()=>{work.dataset.dirty='1';};
       if (this.$('take')) this.$('take').onclick = () => this.run(this.$('take'), stage => this.take(stage));
       if (this.$('mobile-back')) this.$('mobile-back').onclick = () => this.closeMobileCase();
-      if (this.$('change-driver')) this.$('change-driver').onclick = () => this.driverDialog();
+      if (this.$('change-driver')) this.$('change-driver').onclick = () => this.run(this.$('change-driver'), () => this.driverDialog());
       if (this.$('export')) this.$('export').onclick = () => this.run(this.$('export'), stage => this.exportCases([c], stage));
       if (this.$('message-form')) this.$('message-form').onsubmit = event => { event.preventDefault(); const form = event.currentTarget; this.run(event.submitter, async stage => {stage('Preparando…');const data = new FormData(form), attachments = await this.prepareFiles(form.elements.files.files);await this.command('message',{ text:data.get('text'), requiresResponse:data.has('requiresResponse'), clarification:data.has('clarification'), attachments },this.selected,stage);if(this.role==='central')this.closeCentralCase();else this.renderWork();this.toast('Mensaje enviado al Servidor');}); };
       if (this.$('confirm-form')) this.$('confirm-form').onsubmit = event => { event.preventDefault(); this.run(event.submitter, async stage => {stage('Enviando…');await this.command('message',{ text:'Mensaje recibido', requiresResponse:false, confirmationOnly:true },this.selected,stage);this.renderWork();this.toast('Recepción confirmada');}); };
@@ -656,7 +683,13 @@
       if (this.role==='central' && !this.$('person').value) return this.toast('Seleccione personal activo antes de continuar',true);
       this.dialog(this.role === 'driver' ? 'Reportar incidente' : 'Crear caso','<div class="empty"><span class="spinner"></span>Preparando formulario…</div>');
       try {
-        const driverResponse = this.role === 'central' ? await this.service.drivers() : [], deviceResponse = await this.service.devices(), mobile=this.role==='driver'&&this.service.mobileContext?await this.service.mobileContext():{};
+        // Se piden los tres a la vez (no uno detrás del otro): ninguno depende del resultado de
+        // los otros, así que hacerlo en paralelo reduce la espera real, sin cambiar el resultado.
+        const [driverResponse, deviceResponse, mobile] = await Promise.all([
+          this.role === 'central' ? this.service.drivers() : Promise.resolve([]),
+          this.service.devices(),
+          this.role==='driver'&&this.service.mobileContext ? this.service.mobileContext() : Promise.resolve({})
+        ]);
         const drivers=Array.isArray(driverResponse)?driverResponse:[],devices=Array.isArray(deviceResponse)?deviceResponse:[];
         const local = new Date(Date.now()-18000000).toISOString().slice(0,16);
         this.dialog(this.role === 'driver' ? 'Reportar incidente' : 'Crear caso','<form id="a-create-form" class="form-stack"><div class="two"><label>Tipo<select name="type">' + options(D.TYPES) + '</select></label><label>Prioridad<select name="priority">' + options(D.PRIORITIES,'MEDIA') + '</select></label></div>' + (this.role === 'central' ? '<label>Conductor<input name="driverSearch" list="a-create-driver-list" required placeholder="Escriba para buscar"><datalist id="a-create-driver-list">' + drivers.map(d => '<option value="'+esc(d.name)+'">').join('') + '</datalist></label>' : '<div class="info">Conductor: '+esc(this.service.actor.name)+(mobile.plate?' · Vehículo: '+esc(mobile.plate):' · Vehículo no detectado')+(mobile.location?' · Ubicación detectada':' · Ubicación no disponible')+'</div>') + '<div class="two"><label>Vehículo<select name="deviceId"><option value="">No disponible</option>' + devices.map(d => '<option value="'+esc(d.id)+'" '+(d.id===mobile.deviceId?'selected':'')+'>'+esc(d.name)+'</option>').join('') + '</select></label><label>Fecha y hora · Lima<input name="occurredAt" type="datetime-local" value="'+local+'" required></label></div><label>Ubicación<input name="location" maxlength="500" value="'+esc(mobile.location||'')+'"></label><input type="hidden" name="latitude" value="'+esc(mobile.latitude??'')+'"><input type="hidden" name="longitude" value="'+esc(mobile.longitude??'')+'"><label>Descripción / motivo<textarea name="description" required maxlength="6000"></textarea></label><div class="two"><label>Daños<input name="damages" maxlength="500"></label><label>Personas afectadas<input name="affected" maxlength="500"></label></div><label>'+(this.role==='central'?'Mensaje inicial al conductor':'Comentario adicional')+'<textarea name="initialMessage" '+(this.role==='central'?'required':'')+' maxlength="6000"></textarea></label><label>Adjuntar evidencia<input name="files" type="file" multiple accept="image/jpeg,image/png,image/webp,.pdf,.txt,.docx,.xlsx"><small>Hasta 3 archivos · sin video</small></label>'+(this.role==='central'?'<label class="check"><input name="requiresResponse" type="checkbox" checked>Requiere respuesta del conductor</label>':'')+'<button class="primary">Crear caso y registrar información</button></form>');
@@ -681,12 +714,12 @@
         return;
       }
       const isCentral = this.role === 'central';
-      this.dialog('Consulta histórica','<form id="a-history-form" class="form-stack"><label>Consultar<select name="source"><option value="cases">Historial de atenciones</option>' + (isCentral?'<option value="events">Eventos Geotab por gestionar</option>':'') + '</select></label><div class="presets"><button type="button" data-preset="today">Hoy</button><button type="button" data-preset="yesterday">Ayer</button><button type="button" data-preset="7days">Últimos 7 días</button></div><div class="two"><label>Desde · Lima<input name="from" type="datetime-local" step="1" required></label><label>Hasta · Lima<input name="to" type="datetime-local" step="1" required></label></div>' + (isCentral ? '<label>Regla (obligatoria para eventos Geotab)<select name="rule"><option value="">Seleccionar regla</option>' + (this.rules||[]).map(r=>'<option value="'+esc(r.id)+'">'+esc(r.name)+'</option>').join('') + '</select></label>' : '') + '<p class="muted">' + (isCentral ? 'Geotab: máximo 7 días. Atenciones: hasta un año por consulta. Los pendientes antiguos siguen en la vista activa.' : 'Puede consultar hasta un año por vez. Los pendientes antiguos siguen en la vista activa.') + '</p><button class="primary">Consultar</button></form>');
+      this.dialog('Consulta histórica','<form id="a-history-form" class="form-stack"><label>Consultar<select name="source"><option value="cases">Historial de atenciones</option>' + (isCentral?'<option value="events">Eventos Geotab por gestionar</option>':'') + '</select></label><div class="presets"><button type="button" data-preset="today">Hoy</button><button type="button" data-preset="yesterday">Ayer</button><button type="button" data-preset="7days">Últimos 7 días</button>' + (isCentral ? '<button type="button" data-preset="30days">Último mes</button>' : '') + '</div><div class="two"><label>Desde · Lima<input name="from" type="datetime-local" step="1" required></label><label>Hasta · Lima<input name="to" type="datetime-local" step="1" required></label></div>' + (isCentral ? '<label>Regla (obligatoria para eventos Geotab)<select name="rule"><option value="">Seleccionar regla</option>' + (this.rules||[]).map(r=>'<option value="'+esc(r.id)+'">'+esc(r.name)+'</option>').join('') + '</select></label>' : '') + '<p class="muted">' + (isCentral ? 'Geotab: hasta 35 días por consulta (se piden de a 7 días por vez, para no saturar la API). Atenciones: hasta un año por consulta. Los pendientes antiguos siguen en la vista activa.' : 'Puede consultar hasta un año por vez. Los pendientes antiguos siguen en la vista activa.') + '</p><button class="primary">Consultar</button></form>');
       const form=this.$('history-form');
-      const setPreset=key=>{ const range=D.preset(key); for(const [name,value] of Object.entries(range)) form.elements[name].value=new Date(Date.parse(value)-18000000).toISOString().slice(0,19); form.querySelectorAll('[data-preset]').forEach(b=>{b.classList.toggle('active',b.dataset.preset===key);b.setAttribute('aria-pressed',String(b.dataset.preset===key));}); };
+      const setPreset=key=>{ const range=key==='30days'?{from:new Date(Date.now()-30*86400000).toISOString(),to:new Date().toISOString()}:D.preset(key); for(const [name,value] of Object.entries(range)) form.elements[name].value=new Date(Date.parse(value)-18000000).toISOString().slice(0,19); form.querySelectorAll('[data-preset]').forEach(b=>{b.classList.toggle('active',b.dataset.preset===key);b.setAttribute('aria-pressed',String(b.dataset.preset===key));}); };
       form.querySelectorAll('[data-preset]').forEach(b=>b.onclick=()=>setPreset(b.dataset.preset));setPreset('yesterday');
       ['from','to'].forEach(name=>form.elements[name].oninput=()=>form.querySelectorAll('[data-preset]').forEach(b=>{b.classList.remove('active');b.setAttribute('aria-pressed','false');}));
-      form.onsubmit=event=>{event.preventDefault();if(!this.clearSelection())return;const value=Object.fromEntries(new FormData(form));this.run(event.submitter,async()=>{const from=new Date(value.from+'-05:00').toISOString(),to=new Date(value.to+'-05:00').toISOString();if(value.source==='events'){this.historyRows=await this.service.explore(from,to,value.rule);this.historyNextToken='';this.origin='GEOTAB';}else{const result=await this.service.history(from,to);this.historyRows=result.cases;this.historyNextToken=result.nextPageToken||'';this.historyQuery={from,to};if(this.role==='driver')this.origin='ALL';} this.mode=value.source;this.$('tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.origin===this.origin));this.$('state').value='ALL';this.$('priority').value='ALL';this.$('search').value='';this.$('history-label').textContent=(value.source==='events'?'Eventos Geotab por gestionar':'Historial de atenciones')+' · '+date(from)+' — '+date(to);this.$('history-banner').hidden=false;this.$('dialog').close();this.page=0;this.renderList();this.metrics();});};
+      form.onsubmit=event=>{event.preventDefault();if(!this.clearSelection())return;const value=Object.fromEntries(new FormData(form));this.run(event.submitter,async stage=>{const from=new Date(value.from+'-05:00').toISOString(),to=new Date(value.to+'-05:00').toISOString();if(value.source==='events'){this.historyRows=await this.service.explore(from,to,value.rule,stage);this.historyNextToken='';this.origin='GEOTAB';}else{const result=await this.service.history(from,to);this.historyRows=result.cases;this.historyNextToken=result.nextPageToken||'';this.historyQuery={from,to};if(this.role==='driver')this.origin='ALL';} this.mode=value.source;this.$('tabs').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.origin===this.origin));this.$('state').value='ALL';this.$('priority').value='ALL';this.$('search').value='';this.$('history-label').textContent=(value.source==='events'?'Eventos Geotab por gestionar':'Historial de atenciones')+' · '+date(from)+' — '+date(to);this.$('history-banner').hidden=false;this.$('dialog').close();this.page=0;this.renderList();this.metrics();});};
     }
     guide() {
       const extra=this.service.settings&&(this.role==='driver'?this.service.settings.driverGuide:this.service.settings.centralGuide);
@@ -737,17 +770,12 @@
       if(cases.length>100)throw new Error('Filtre la consulta a un máximo de 100 casos por exportación');
       if(onProgress)onProgress('Ejecutando…');
       const rows=[];
+      // Ya no hace falta reintentar aquí: service.detail() ahora se encarga solo de insistir en
+      // silencio hasta lograrlo, sin rendirse ante una conexión lenta o caída.
       for(const item of cases){
-        let lastError, ok=false;
         const exportStart=Date.now();
-        // Hasta 3 intentos en silencio: solo ante una conexión lenta o caída (no ante un rechazo real
-        // del servidor, que ya llega marcado como definitivo y se muestra de inmediato).
-        for(let attempt=0;attempt<3&&!ok;attempt++){
-          try{ rows.push(await this.service.detail(item.id)); ok=true; }
-          catch(error){ lastError=error; if(error.definitive)break; if(attempt<2)await new Promise(r=>setTimeout(r,1000)); }
-        }
+        rows.push(await this.service.detail(item.id));
         if(this.role==='central'){this.queryMs=Math.max(this.queryMs||0,Date.now()-exportStart);this.renderLimits();}
-        if(!ok)throw lastError;
       }
       const bytes=await window.ArdepePDF.generate(rows,file=>this.service.evidence(file),undefined,undefined,this.rules||[]);
       const url=URL.createObjectURL(new Blob([bytes],{type:'application/pdf'})),link=document.createElement('a');
