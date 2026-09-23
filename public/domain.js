@@ -93,7 +93,10 @@
     if (!Number.isInteger(file.size) || file.size <= 0 || file.size > maxBytes) throw new Error('Cada adjunto debe tener entre 1 byte y ' + Math.floor(maxBytes / 1000000) + ' MB');
     return true;
   }
-  function actorCanRead(actor, item) { return actor.role === 'central' || actor.role === 'driver' && actor.id === item.driverId; }
+  // Un conductor puede ver (o actuar sobre) un caso propio solo si él mismo lo reportó, o si Central
+  // ya le mandó al menos un mensaje real. Así, "Iniciar atención" o "Cambiar conductor" por sí solos
+  // nunca hacen que le aparezca algo nuevo — recién cuando Central decide avisarle de verdad.
+  function actorCanRead(actor, item) { return actor.role === 'central' || actor.role === 'driver' && actor.id === item.driverId && (item.origin === 'CONDUCTOR' || Boolean(item.lastCentralMessageAt)); }
   function central(actor) {
     if (actor.role !== 'central' || !actor.person || !actor.person.active || actor.person.canManage === false) throw new Error('Seleccione personal activo con permiso de gestión');
   }
