@@ -143,8 +143,11 @@
         let attempt = 0, warned = false, elapsed = 0, lastResend = 0;
         while (true) {
           if (bounded && elapsed >= 120000) { const error = new Error('Envío de fondo agotó su intento; se reintentará más adelante.'); error.uncertain = true; throw error; }
-          const delay = attempt === 0 ? 100 : (attempt < 8 ? 250 : 600);
-          await new Promise(resolve => setTimeout(resolve, delay));
+          // El envío ya esperó la respuesta completa del servidor (aunque no se pueda leer, por el
+          // modo usado): para cuando llega aquí, lo más probable es que ya haya terminado. Por eso
+          // la primera consulta se hace de inmediato, sin esperar nada — el margen real está ahí.
+          const delay = attempt === 0 ? 0 : (attempt < 8 ? 200 : 500);
+          if (delay) await new Promise(resolve => setTimeout(resolve, delay));
           elapsed += delay;
           if (!warned && elapsed >= 20000) { warned = true; if (onProgress) onProgress('Esto está tardando más de lo normal, seguimos intentando…'); }
           if (elapsed - lastResend >= 120000) { lastResend = elapsed; await send(); }
@@ -224,8 +227,17 @@
       try{const db=await this.pendingDb();if(db){await new Promise((resolve,reject)=>{const transaction=db.transaction('pending','readwrite');transaction.objectStore('pending').put(map,this.pendingKey());transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);});return;}}catch(_){}
       try{sessionStorage.setItem(this.pendingKey(),JSON.stringify(map));}catch(_){throw new Error('No hay espacio local para conservar el envío. No se enviaron datos; reduzca los adjuntos o libere almacenamiento.');}
     }
-    async savePendingEntry(entry) { const map=await this.pendingMap(); map[entry.command.operationId]=entry; await this.savePendingMap(map); }
-    async clearPendingEntry(operationId) { const map=await this.pendingMap(); delete map[operationId]; try{await this.savePendingMap(map);}catch(_){} }
+    // Cuando dos envíos distintos terminan casi al mismo tiempo (por ejemplo, dos pendientes de
+    // fondo resolviéndose juntos), leer-modificar-guardar el mismo mapa sin ningún orden podía
+    // hacer que uno pisara el cambio del otro. Esta cola asegura que cada lectura y escritura del
+    // mapa se haga de a una por vez, en orden, sin importar cuántas lleguen a la vez.
+    async withPendingMap(mutate) {
+      const run = async () => { const map = await this.pendingMap(); mutate(map); await this.savePendingMap(map); };
+      this.pendingQueue = (this.pendingQueue || Promise.resolve()).then(run, run);
+      return this.pendingQueue;
+    }
+    async savePendingEntry(entry) { await this.withPendingMap(map => { map[entry.command.operationId] = entry; }); }
+    async clearPendingEntry(operationId) { try { await this.withPendingMap(map => { delete map[operationId]; }); } catch (_) {} }
     // Se ejecuta sola, sin que nadie la espere ni quede bloqueado por ella: recorre cualquier envío
     // que haya quedado sin confirmar (de otra acción, u otra pestaña) e intenta resolverlo, en
     // silencio, con el mismo mecanismo de siempre. Un rechazo real (ya no aplica) se descarta; uno
